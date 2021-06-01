@@ -8,7 +8,7 @@ OBClient 依赖 libobclient。libobclient 是一个基于 MariaDB 的 mariadb-co
 
 按以下方式获取 OBClient：
 
-## 通过 YUM 源攻取 OBClient
+## 通过 YUM 源获取 OBClient
 
 ```shell
 # 添加 yum 源
