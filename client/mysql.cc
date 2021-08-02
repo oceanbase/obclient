@@ -4655,6 +4655,22 @@ char *mysql_authentication_dialog_ask(MYSQL *mysql, int type,
 }
 
 static int
+init_enviroment_variable(MYSQL &mysql)
+{
+  char *p = NULL;
+  char cmd_buf[1024];
+  int cmd_buf_len = 1024;
+  if (NULL != (p = getenv("NLS_LANG"))) {
+    // date format
+    if (NULL != (p = getenv("NLS_DATE_FORMAT"))) {
+      my_snprintf(cmd_buf, cmd_buf_len, "set NLS_DATE_FORMAT = '%s'", p);
+      mysql_options(&mysql, MYSQL_INIT_COMMAND, cmd_buf);
+    }
+  }
+  return 0;
+}
+
+static int
 sql_real_connect(char *host,char *database,char *user,char *password,
 		 uint silent)
 {
@@ -4666,6 +4682,9 @@ sql_real_connect(char *host,char *database,char *user,char *password,
   mysql_init(&mysql);
   if (opt_init_command)
     mysql_options(&mysql, MYSQL_INIT_COMMAND, opt_init_command);
+
+  init_enviroment_variable(mysql);
+
   if (opt_connect_timeout)
   {
     uint timeout=opt_connect_timeout;
