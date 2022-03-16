@@ -66,8 +66,10 @@ ln -s %{prefix}/bin/mysql_config /usr/bin/mysql_config
 
 
 %preun
-rm /usr/bin/obclient
-rm /usr/bin/mysql_config
+if [ "$1" = "0" ]; then
+    rm /usr/bin/obclient
+    rm /usr/bin/mysql_config
+fi
 
 %changelog
 
