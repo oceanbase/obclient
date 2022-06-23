@@ -869,6 +869,8 @@ extern my_bool init_dynamic_string(DYNAMIC_STRING *str, const char *init_str,
 extern my_bool dynstr_append(DYNAMIC_STRING *str, const char *append);
 my_bool dynstr_append_mem(DYNAMIC_STRING *str, const char *append,
 			  size_t length);
+my_bool dynstr_append_char(DYNAMIC_STRING *str, const char c);
+my_bool dynstr_append_cstring(DYNAMIC_STRING *str, const char *fmt, ...);
 extern my_bool dynstr_append_os_quoted(DYNAMIC_STRING *str, const char *append,
                                        ...);
 extern my_bool dynstr_append_quoted(DYNAMIC_STRING *str,

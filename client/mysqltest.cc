@@ -56,6 +56,13 @@
 #include <my_stacktrace.h>
 
 #include <welcome_copyright_notice.h> // ORACLE_WELCOME_COPYRIGHT_NOTICE
+#include <sql_string.h>
+
+#include <string>
+#include <algorithm>
+using std::min;
+using std::max;
+using std::string;
 
 #ifdef _WIN32
 #include <crtdbg.h>
@@ -101,7 +108,9 @@ static my_bool get_one_option(int optid, const struct my_option *,
 C_MODE_END
 
 enum {
-  OPT_LOG_DIR=OPT_MAX_CLIENT_OPTION, OPT_RESULT_FORMAT_VERSION
+  OPT_LOG_DIR = OPT_MAX_CLIENT_OPTION, OPT_RESULT_FORMAT_VERSION, 
+  OPT_EXPLAIN_PROTOCOL=396, OPT_JSON_EXPLAIN_PROTOCOL, OPT_AUTO_PX = 398, OPT_INNER_EXPLAIN_PROTOCOL,
+  OPT_EXPLAIN_AS_PX, OPT_EXPLAIN_AS_NO_PX
 };
 
 static int record= 0, opt_sleep= -1;
@@ -112,6 +121,7 @@ const char *opt_prologue= 0, *opt_charsets_dir;
 static int opt_port= 0;
 static int opt_max_connect_retries;
 static int opt_result_format_version;
+static int opt_explain_protocol;
 static int opt_max_connections= DEFAULT_MAX_CONN;
 static int error_count= 0;
 static my_bool opt_compress= 0, silent= 0, verbose= 0;
@@ -121,17 +131,24 @@ static my_bool opt_mark_progress= 0;
 static my_bool ps_protocol= 0, ps_protocol_enabled= 0;
 static my_bool sp_protocol= 0, sp_protocol_enabled= 0;
 static my_bool view_protocol= 0, view_protocol_enabled= 0;
+static my_bool disable_explain = 0;
+static my_bool explain_protocol = 0, explain_protocol_enabled = 0;
+static my_bool json_explain_protocol = 0, json_explain_protocol_enabled = 0;
 static my_bool cursor_protocol= 0, cursor_protocol_enabled= 0;
 static my_bool parsing_disabled= 0;
 static my_bool display_result_vertically= FALSE, display_result_lower= FALSE,
   display_metadata= FALSE, display_result_sorted= FALSE,
   display_session_track_info= FALSE;
 static my_bool disable_query_log= 0, disable_result_log= 0;
-static my_bool disable_connect_log= 0;
+static my_bool disable_connect_log= 1;
 static my_bool disable_warnings= 0, disable_column_names= 0;
 static my_bool prepare_warnings_enabled= 0;
 static my_bool disable_info= 1;
 static my_bool abort_on_error= 1, opt_continue_on_error= 0;
+static my_bool disable_result_sorted = 1;
+static my_bool use_px = 1;
+static my_bool explain_as_px = 1;
+static my_bool explain_as_no_px = 1;
 static my_bool server_initialized= 0;
 static my_bool is_windows= 0;
 static char **default_argv;
@@ -159,7 +176,8 @@ static struct property prop_list[] = {
   { &ps_protocol_enabled, 0, 0, 0, "$ENABLED_PS_PROTOCOL" },
   { &disable_query_log, 0, 0, 1, "$ENABLED_QUERY_LOG" },
   { &disable_result_log, 0, 0, 1, "$ENABLED_RESULT_LOG" },
-  { &disable_warnings, 0, 0, 1, "$ENABLED_WARNINGS" }
+  { &disable_warnings, 0, 0, 1, "$ENABLED_WARNINGS" },
+  { &disable_result_sorted, 0, 1, 1, "$ENABLED_RESULT_SORTED" }
 };
 
 static my_bool once_property= FALSE;
@@ -174,6 +192,7 @@ enum enum_prop {
   P_QUERY,
   P_RESULT,
   P_WARN,
+  P_RESULT_SORT,
   P_MAX
 };
 
@@ -261,6 +280,11 @@ static size_t suite_dir_len, overlay_dir_len;
 static regex_t ps_re;     /* the query can be run using PS protocol */
 static regex_t sp_re;     /* the query can be run as a SP */
 static regex_t view_re;   /* the query can be run as a view*/
+
+static regex_t explain_re;/* the query can be converted to EXPLAIN */
+static regex_t parallel_re;   /* the query can be run in parallel */
+static regex_t explain_select_re;/* EXPLAIN SELECT ..., add use-px/no-use-px hint to it */
+static regex_t explain_st;/* EXPLAIN */
 
 static void init_re(void);
 static int match_re(regex_t *, char *);
@@ -365,6 +389,7 @@ enum enum_commands {
   Q_ENABLE_CONNECT_LOG, Q_DISABLE_CONNECT_LOG,
   Q_WAIT_FOR_SLAVE_TO_STOP,
   Q_ENABLE_WARNINGS, Q_DISABLE_WARNINGS,
+  Q_ENABLE_RESULT_SORTED, Q_DISABLE_RESULT_SORTED,
   Q_ENABLE_INFO, Q_DISABLE_INFO,
   Q_ENABLE_SESSION_TRACK_INFO, Q_DISABLE_SESSION_TRACK_INFO,
   Q_ENABLE_METADATA, Q_DISABLE_METADATA,
@@ -390,6 +415,7 @@ enum enum_commands {
   Q_MOVE_FILE, Q_REMOVE_FILES_WILDCARD, Q_SEND_EVAL,
   Q_ENABLE_PREPARE_WARNINGS, Q_DISABLE_PREPARE_WARNINGS,
   Q_RESET_CONNECTION,
+  Q_EXPLAIN_PROTOCOL,
   Q_UNKNOWN,			       /* Unknown command.   */
   Q_COMMENT,			       /* Comments, ignored. */
   Q_COMMENT_WITH_COMMAND,
@@ -439,6 +465,8 @@ const char *command_names[]=
   "wait_for_slave_to_stop",
   "enable_warnings",
   "disable_warnings",
+  "enable_sorted_result",
+  "disable_sorted_result",
   "enable_info",
   "disable_info",
   "enable_session_track_info",
@@ -500,6 +528,7 @@ const char *command_names[]=
   "enable_prepare_warnings",
   "disable_prepare_warnings",
   "reset_connection",
+  "explain_protocol",
 
   0
 };
@@ -552,6 +581,7 @@ TYPELIB command_typelib= {array_elements(command_names),"",
 			  command_names, 0};
 
 DYNAMIC_STRING ds_res;
+DYNAMIC_STRING ds_result;
 /* Points to ds_warning in run_query, so it can be freed */
 DYNAMIC_STRING *ds_warn= 0;
 struct st_command *curr_command= 0;
@@ -647,6 +677,574 @@ void free_all_replace(){
 
 void var_set_int(const char* name, int value);
 
+
+
+enum enum_info_type { INFO_INFO,INFO_ERROR,INFO_RESULT};
+
+int databuff_vprintf(char *buf, const int64_t buf_len, int64_t &pos, const char *fmt, va_list args)
+{
+  int ret = 0;
+  if (NULL != buf && 0 <= pos && pos < buf_len) {
+    int len = vsnprintf(buf + pos, buf_len - pos, fmt, args);
+    if (len < 0) {
+      ret = -1;
+    } else if (len < buf_len - pos) {
+      pos += len;
+    } else {
+      pos = buf_len - 1;  //skip '\0' written by vsnprintf
+      ret = -1;
+    }
+  } else {
+    ret = -1;
+  }
+  return ret;
+}
+
+int databuff_printf(char *buf, const int64_t buf_len, int64_t &pos, const char *fmt, ...)
+{
+  int ret = 0;
+  va_list args;
+  va_start(args, fmt);
+  if (0 != databuff_vprintf(buf, buf_len, pos, fmt, args)) {
+  } else {}
+  va_end(args);
+  return ret;
+}
+
+
+static int trim_oracle_errmsg(const char **str, int need_trim)
+{
+  int ret = false;
+  if (str != NULL && *str != NULL && strlen(*str) > 11) {
+    const char *tmp_str = strchr(*str, '-');
+    if (tmp_str != NULL
+      && tmp_str - *str <= 5
+      && strlen(tmp_str) > 8
+      && isdigit(tmp_str[1])
+      && isdigit(tmp_str[2])
+      && isdigit(tmp_str[3])
+      && isdigit(tmp_str[4])
+      && isdigit(tmp_str[5])
+      && tmp_str[6] == ':'
+      && tmp_str[7] == ' ') {
+      if (need_trim) {
+        *str = tmp_str + 8;
+      }
+      ret = true;
+    }
+  }
+  return ret;
+}
+
+void mm_fputs(char *s, DYNAMIC_STRING *ds /*FILE *file*/)
+{
+//  dynstr_append_mem2(ds, s, strlen(s), false);
+  dynstr_append_cstring(ds, s);
+}
+
+
+
+void mm_putc(char c, DYNAMIC_STRING *ds)
+{
+
+  //putc(c, file);
+  dynstr_append_char(ds, c);
+}
+
+void mm_puts(char *s, DYNAMIC_STRING *ds)
+{
+  //tee_fputs(s, file);
+  //tee_putc('\n', file);
+
+  mm_fputs(s, ds);
+  mm_fputs((char*)"\n", ds);
+
+}
+
+static void
+print_as_hex(DYNAMIC_STRING *ds,
+             const char *str,
+             ulong len,
+             ulong total_bytes_to_send)
+{
+  const char *ptr= str, *end= ptr+len;
+  ulong i;
+//  if (0 != databuff_printf(buf, buf_len, pos, "0x"))
+//     return;
+  dynstr_append_cstring(ds, "0x");
+  for(; ptr < end; ptr++)
+    dynstr_append_cstring(ds, "%02X", *((uchar*)ptr));
+
+//        if (0 != databuff_printf(buf, buf_len, pos, "%02X", *((uchar*)ptr)))
+//        return;
+  for (i= 2*len+2; i < total_bytes_to_send; i++)
+    dynstr_append_cstring(ds, " ");
+//     if (0 != (databuff_printf(buf, buf_len, pos, " ")))
+//         return;
+
+}
+
+static void
+print_as_hex_oracle(DYNAMIC_STRING *ds,
+const char *str,
+ulong len,
+ulong total_bytes_to_send)
+{
+  const char *ptr = str, *end = ptr + len;
+  ulong i;
+  for (; ptr < end; ptr++)
+    dynstr_append_cstring(ds, "%02X", *((uchar*)ptr));
+  for (i = 2 * len; i < total_bytes_to_send; i++)
+    dynstr_append_cstring(ds, " ");
+}
+
+/* Used to determine if we should invoke print_as_hex for this field */
+
+static bool
+is_binary_field(MYSQL_FIELD *field)
+{
+  if ((field->charsetnr == 63) &&
+      (field->type == MYSQL_TYPE_BIT ||
+       field->type == MYSQL_TYPE_BLOB ||
+       field->type == MYSQL_TYPE_LONG_BLOB ||
+       field->type == MYSQL_TYPE_MEDIUM_BLOB ||
+       field->type == MYSQL_TYPE_TINY_BLOB ||
+       field->type == MYSQL_TYPE_VAR_STRING ||
+       field->type == MYSQL_TYPE_OB_NVARCHAR2 ||
+       field->type == MYSQL_TYPE_OB_NCHAR ||
+       field->type == MYSQL_TYPE_STRING ||
+       field->type == MYSQL_TYPE_VARCHAR ||
+       field->type == MYSQL_TYPE_GEOMETRY))
+    return 1;
+  return 0;
+}
+
+static bool
+is_binary_field_oracle(MYSQL_FIELD *field)
+{
+  if ((field->charsetnr == 63) &&
+    (field->type == MYSQL_TYPE_BLOB ||
+    field->type == MYSQL_TYPE_LONG_BLOB ||
+    field->type == MYSQL_TYPE_MEDIUM_BLOB ||
+    field->type == MYSQL_TYPE_TINY_BLOB))
+    return 1;
+  return 0;
+}
+
+
+/* Various printing flags */
+#define MY_PRINT_ESC_0 1  /* Replace 0x00 bytes to "\0"              */
+#define MY_PRINT_SPS_0 2  /* Replace 0x00 bytes to space             */
+#define MY_PRINT_XML   4  /* Encode XML entities                     */
+#define MY_PRINT_MB    8  /* Recognize multi-byte characters         */
+#define MY_PRINT_CTRL 16  /* Replace TAB, NL, CR to "\t", "\n", "\r" */
+void mm_write(DYNAMIC_STRING * file, const char *s, size_t slen, int flags)
+{
+//#ifdef _WIN32
+//  my_bool is_console= my_win_is_console_cached(file);
+//#endif
+  const char *se;
+  for (se= s + slen; s < se; s++)
+  {
+//    const char *t;
+
+    //fprintf(stderr, "%c, %d, flags=%d, use_mb=%d, mblen=%d\n", *s, slen, flags, use_mb(charset_info), my_ismbchar(charset_info, s, se));
+    if (flags & MY_PRINT_MB)
+    {
+      int mblen;
+      if (use_mb(charset_info) &&
+          (mblen= my_ismbchar(charset_info, s, se)))
+      {
+//#ifdef _WIN32
+//        if (is_console)
+//          my_win_console_write(charset_info, s, mblen);
+//        else
+//#endif
+
+        for (int i = 0; i < mblen; i++)
+        {
+          fprintf(stderr, "mm: %c, d%", s[i], i);
+           mm_putc(s[i], file);
+        }
+//        if (fwrite(s, 1, mblen, file) != (size_t) mblen) {
+//          perror("fwrite");
+//        }
+        if (FALSE/*opt_outfile*/) {
+          for (int i = 0; i < mblen; i++)
+             mm_putc(s[i], file);
+
+//          if (fwrite(s, 1, mblen, OUTFILE) != (size_t) mblen) {
+//            perror("fwrite");
+//          }
+        }
+        s+= mblen - 1;
+        continue;
+      }
+    }
+
+    if /*((flags & MY_PRINT_XML) && (t= array_value(xmlmeta, *s)))
+      tee_fputs(t, file);
+      else if */((flags & MY_PRINT_SPS_0) && *s == '\0')
+      mm_putc((int) ' ', file);   // This makes everything hard
+    else if ((flags & MY_PRINT_ESC_0) && *s == '\0')
+      mm_fputs((char*)"\\0", file);      // This makes everything hard
+    else if ((flags & MY_PRINT_CTRL) && *s == '\t')
+      mm_fputs((char*)"\\t", file);      // This would destroy tab format
+    else if ((flags & MY_PRINT_CTRL) && *s == '\n')
+      mm_fputs((char*)"\\n", file);      // This too
+    else if ((flags & MY_PRINT_CTRL) && *s == '\\')
+      mm_fputs((char*)"\\\\", file);
+    else
+    {
+//#ifdef _WIN32
+//      if (is_console)
+//        my_win_console_putc(charset_info, (int) *s);
+//      else
+//#endif
+      mm_putc((int) *s, file);
+//      if (opt_outfile)
+//        putc((int) *s, OUTFILE);
+    }
+  }
+}
+
+
+static void mm_print_sized_data(DYNAMIC_STRING *ds,
+                                const char *data,
+                                unsigned int data_length,
+                                unsigned int total_bytes_to_send,
+                                bool right_justified)
+{
+  /*
+    For '\0's print ASCII spaces instead, as '\0' is eaten by (at
+    least my) console driver, and that messes up the pretty table
+    grid.  (The \0 is also the reason we can't use fprintf() .)
+  */
+  unsigned int i;
+
+  if (right_justified)
+    for (i= data_length; i < total_bytes_to_send; i++)
+      mm_putc(' ', ds);
+
+  mm_write(ds, data, data_length, MY_PRINT_SPS_0 | MY_PRINT_MB);
+
+  if (! right_justified)
+    for (i= data_length; i < total_bytes_to_send; i++)
+      mm_putc(' ', ds);
+}
+/* Maximum memory limit that can be claimed by alloca(). */
+#define MAX_ALLOCA_SIZE              512
+
+static const char *fieldtype2str(enum enum_field_types type)
+{
+  switch (type) {
+    case MYSQL_TYPE_BIT:         return "BIT";
+    case MYSQL_TYPE_BLOB:        return "BLOB";
+    case MYSQL_TYPE_OB_RAW:      return "RAW";
+    case MYSQL_TYPE_OB_INTERVAL_YM:   return "INTERVAL_YEAR_TO_MONTH";
+    case MYSQL_TYPE_OB_INTERVAL_DS:   return "INTERVAL_DAY_TO_SECOND";
+    case MYSQL_TYPE_OB_NUMBER_FLOAT:  return "MYSQL_TYPE_OB_NUMBER_FLOAT";
+    case MYSQL_TYPE_OB_NVARCHAR2:     return "MYSQL_TYPE_OB_NVARCHAR2";
+    case MYSQL_TYPE_OB_NCHAR:         return "MYSQL_TYPE_OB_NCHAR";
+    case MYSQL_TYPE_DATE:        return "DATE";
+    case MYSQL_TYPE_DATETIME:    return "DATETIME";
+    case MYSQL_TYPE_NEWDECIMAL:  return "NEWDECIMAL";
+    case MYSQL_TYPE_DECIMAL:     return "DECIMAL";
+    case MYSQL_TYPE_DOUBLE:      return "DOUBLE";
+    case MYSQL_TYPE_ENUM:        return "ENUM";
+    case MYSQL_TYPE_FLOAT:       return "FLOAT";
+    case MYSQL_TYPE_GEOMETRY:    return "GEOMETRY";
+    case MYSQL_TYPE_INT24:       return "INT24";
+    case MYSQL_TYPE_JSON:        return "JSON";
+    case MYSQL_TYPE_LONG:        return "LONG";
+    case MYSQL_TYPE_LONGLONG:    return "LONGLONG";
+    case MYSQL_TYPE_LONG_BLOB:   return "LONG_BLOB";
+    case MYSQL_TYPE_MEDIUM_BLOB: return "MEDIUM_BLOB";
+    case MYSQL_TYPE_NEWDATE:     return "NEWDATE";
+    case MYSQL_TYPE_NULL:        return "NULL";
+    case MYSQL_TYPE_SET:         return "SET";
+    case MYSQL_TYPE_SHORT:       return "SHORT";
+    case MYSQL_TYPE_STRING:      return "STRING";
+    case MYSQL_TYPE_TIME:        return "TIME";
+    case MYSQL_TYPE_TIMESTAMP:   return "TIMESTAMP";
+    case MYSQL_TYPE_TINY:        return "TINY";
+    case MYSQL_TYPE_TINY_BLOB:   return "TINY_BLOB";
+    case MYSQL_TYPE_VAR_STRING:  return "VAR_STRING";
+    case MYSQL_TYPE_YEAR:        return "YEAR";
+    case MYSQL_TYPE_CURSOR:      return "CURSOR";
+    default:                     return "?-unknown-?";
+  }
+}
+
+static char *fieldflags2str(uint f) {
+  static char buf[1024];
+  char *s=buf;
+  *s=0;
+#define ff2s_check_flag(X) \
+                if (f & X ## _FLAG) { s=strcpy(s, # X " "); f &= ~ X ## _FLAG; }
+  ff2s_check_flag(NOT_NULL);
+  ff2s_check_flag(PRI_KEY);
+  ff2s_check_flag(UNIQUE_KEY);
+  ff2s_check_flag(MULTIPLE_KEY);
+  ff2s_check_flag(BLOB);
+  ff2s_check_flag(UNSIGNED);
+  ff2s_check_flag(ZEROFILL);
+  ff2s_check_flag(BINARY);
+  ff2s_check_flag(ENUM);
+  ff2s_check_flag(AUTO_INCREMENT);
+  ff2s_check_flag(TIMESTAMP);
+  ff2s_check_flag(SET);
+  ff2s_check_flag(NO_DEFAULT_VALUE);
+  ff2s_check_flag(NUM);
+  ff2s_check_flag(PART_KEY);
+  ff2s_check_flag(GROUP);
+  ff2s_check_flag(UNIQUE);
+  ff2s_check_flag(BINCMP);
+  ff2s_check_flag(ON_UPDATE_NOW);
+#undef ff2s_check_flag
+  if (f)
+    sprintf(s, " unknows=0x%04x", f);
+  return buf;
+}
+
+static void
+print_field_types(DYNAMIC_STRING *ds, MYSQL_RES *result)
+{
+  MYSQL_FIELD   *field;
+  uint i=0;
+
+  while ((field = mysql_fetch_field(result)))
+  {
+    dynstr_append_cstring(ds, "Field %3u:  `%s`\n"
+                          "Catalog:    `%s`\n"
+                          "Database:   `%s`\n"
+                          "Table:      `%s`\n"
+                          "Org_table:  `%s`\n"
+                          "Type:       %s\n"
+                          "Collation:  %s (%u)\n"
+                          "Length:     %lu\n"
+                          "Max_length: %lu\n"
+                          "Decimals:   %u\n"
+                          "Flags:      %s\n\n",
+                          ++i,
+                          field->name, field->catalog, field->db, field->table,
+                          field->org_table, fieldtype2str(field->type),
+                          get_charset_name(field->charsetnr), field->charsetnr,
+                          field->length, field->max_length, field->decimals,
+                          fieldflags2str(field->flags));
+  }
+  mm_puts((char*)"", ds);
+}
+#define MAX_COLUMN_LENGTH 1024
+static my_bool column_names = 1;
+static my_bool opt_binhex = 0;
+static void
+print_table_data(DYNAMIC_STRING *ds,
+                 DYNAMIC_STRING *ds_sorted,
+                 DYNAMIC_STRING *last_line,
+                 MYSQL_RES *result, MYSQL *mysql)
+{
+  String separator(256);
+  MYSQL_ROW    cur;
+  MYSQL_FIELD  *field;
+  bool         *num_flag;
+  size_t        sz;
+
+  sz= sizeof(bool) * mysql_num_fields(result);
+  num_flag= (bool *) my_safe_alloca(sz);
+  if (FALSE /*column_types_flag*/)
+  {
+    print_field_types(ds, result);
+    if (!mysql_num_rows(result))
+      return;
+    mysql_field_seek(result,0);
+  }
+  separator.copy("+",1,charset_info);
+  while ((field = mysql_fetch_field(result)))
+  {
+    size_t length= column_names ? field->name_length : 0;
+    if (FALSE /*quick*/)
+      length= max<size_t>(length, field->length);
+    else
+      length= max<size_t>(length, field->max_length);
+    if (length < 4 && !IS_NOT_NULL(field->flags))
+      length=4;                                        // Room for "NULL"
+    if (mysql->oracle_mode && is_binary_field_oracle(field)) {
+      length = length * 2;
+    } else if (opt_binhex && is_binary_field(field)) {
+      length = 2 + length * 2;
+    }
+    field->max_length=(ulong) length;
+    separator.fill(separator.length()+length+2,'-');
+    separator.append('+');
+  }
+  separator.append('\0');                       // End marker for \0
+  mm_puts((char*) separator.ptr(), ds);
+
+  // print column names
+  if (column_names)
+  {
+    mysql_field_seek(result,0);
+    (void)mm_fputs((char*)"|", ds);
+    for (uint off=0; (field = mysql_fetch_field(result)) ; off++)
+    {
+      size_t name_length= strlen(field->name);
+      size_t numcells= charset_info->cset->numcells(charset_info,
+                                                    field->name,
+                                                    field->name + name_length);
+      size_t display_length= field->max_length + name_length - numcells;
+      dynstr_append_cstring(ds, " %-*s |",
+                            min<int>((int) display_length, MAX_COLUMN_LENGTH),
+                            field->name);
+      num_flag[off]= IS_NUM(field->type);
+    }
+    (void)mm_fputs((char*)"\n", ds);
+    mm_puts((char*) separator.ptr(), ds);
+  }
+
+  while ((cur= mysql_fetch_row(result)))
+  {
+    //if (interrupted_query)
+    //  break;
+    ulong *lengths= mysql_fetch_lengths(result);
+    (void)mm_fputs((char*)"| ", ds_sorted);
+    mysql_field_seek(result, 0);
+    for (uint off= 0; off < mysql_num_fields(result); off++)
+    {
+      const char *buffer;
+      uint data_length;
+      uint field_max_length;
+      size_t visible_length;
+      uint extra_padding;
+
+      if (off)
+        (void)mm_fputs((char*)" ", ds_sorted);
+
+
+      if (off < max_replace_column && replace_column[off])
+      {
+        buffer = replace_column[off];
+        data_length = strlen(buffer);
+      } else {
+        if (cur[off] == NULL)
+        {
+          buffer= "NULL";
+          data_length= 4;
+        }
+        else
+        {
+          buffer = cur[off];
+          data_length = (uint) lengths[off];
+        }
+      }
+
+      if (glob_replace_regex)
+      {
+        /* Regex replace */
+        if (!multi_reg_replace(glob_replace_regex, (char*)buffer))
+        {
+          buffer = glob_replace_regex->buf;
+          data_length = strlen(buffer);
+        }
+      }
+
+      field= mysql_fetch_field(result);
+      field_max_length= field->max_length;
+
+      /*
+       How many text cells on the screen will this string span?  If it contains
+       multibyte characters, then the number of characters we occupy on screen
+       will be fewer than the number of bytes we occupy in memory.
+
+       We need to find how much screen real-estate we will occupy to know how
+       many extra padding-characters we should send with the printing function.
+      */
+      visible_length= charset_info->cset->numcells(charset_info, buffer, buffer + data_length);
+      extra_padding= (uint) (data_length - visible_length);
+//      fprintf(stderr, "print_table_data, %d, %d, %d, %d ", opt_binhex, is_binary_field(field), field_max_length, MAX_COLUMN_LENGTH);
+      if (mysql->oracle_mode && is_binary_field_oracle(field))
+        print_as_hex_oracle(ds_sorted, cur[off], lengths[off], field_max_length);
+      else if (opt_binhex && is_binary_field(field))
+        print_as_hex(ds_sorted, cur[off], lengths[off], field_max_length);
+      else if (field_max_length > MAX_COLUMN_LENGTH)
+         mm_print_sized_data(ds_sorted, buffer, data_length, MAX_COLUMN_LENGTH+extra_padding, FALSE);
+      else
+      {
+        if (num_flag[off] != 0) /* if it is numeric, we right-justify it */
+           mm_print_sized_data(ds_sorted, buffer, data_length, field_max_length+extra_padding, TRUE);
+        else
+           mm_print_sized_data(ds_sorted, buffer, data_length, field_max_length+extra_padding, FALSE);
+      }
+      mm_fputs((char*)" |", ds_sorted);
+    }
+    (void)mm_fputs((char*)"\n", ds_sorted);
+  }
+  mm_puts((char*) separator.ptr(), last_line);
+  my_safe_afree((bool *) num_flag, sz);
+}
+
+void print_result_to_buf(DYNAMIC_STRING *ds,
+                         DYNAMIC_STRING *ds_sorted,
+                         DYNAMIC_STRING *last_line,
+                         my_bool vertical,
+                         MYSQL_RES *result,
+                         MYSQL *mysql)
+{
+  char         buff[200]; /* about 110 chars used so far */
+  char         time_buff[52+3+1]; /* time max + space&parens + NUL */
+  ulong warnings = 0;
+  //do
+  {
+    char *pos;
+    bool batchmode= false;//(status.batch && verbose <= 1) ? TRUE : FALSE;
+    buff[0]= 0;
+    bool quick = true;
+    uint               error= 0;
+
+
+    /* Every branch must truncate  buff . */
+    if (result)
+    {
+      if (!mysql_num_rows(result) && ! quick /*&& !column_types_flag*/)
+      {
+        strcpy(buff, "Empty set");
+      }
+      else
+      {
+        print_table_data(ds, ds_sorted, last_line, result, mysql);
+        if( !batchmode )
+           sprintf(buff,"%lld %s in set",
+                   mysql_num_rows(result),
+                   mysql_num_rows(result) == 1LL ? "row" : "rows");
+        //end_pager();
+        //if (mysql_errno(&mysql))
+        //   error= put_error(&mysql);
+      }
+
+      // /* Show warnings if any or error occured */
+      //if (show_warnings == 1 && (warnings >= 1 || error))
+      //   print_warnings();
+    }
+    else if (mysql_affected_rows(mysql) == ~(ulonglong) 0)
+       strcpy(buff,"Query OK");
+    else if( !batchmode )
+       sprintf(buff,"Query OK, %lld %s affected",
+               mysql_affected_rows(mysql),
+               mysql_affected_rows(mysql) == 1LL ? "row" : "rows");
+
+    pos=strend(buff);
+    if ((warnings= mysql_warning_count(mysql)) && !batchmode)
+    {
+      *pos++= ',';
+      *pos++= ' ';
+      pos=int10_to_str(warnings, pos, 10);
+      pos=strcpy(pos, " warning");
+      if (warnings != 1)
+         *pos++= 's';
+    }
+  } //while (!(err= mysql_next_result(mysql)));
+
+}
 
 class LogFile {
   FILE* m_file;
@@ -1520,11 +2118,21 @@ size_t print_file_stack(char *s, const char *end)
   return s - start;
 }
 
-
+/* not thread safe, safe for mysqltest.cc */
+static char* getDateTime()
+{
+  static char nowtime[20];
+  time_t rawtime;
+  struct tm* ltime;
+  time(&rawtime);
+  ltime = localtime(&rawtime);
+  strftime(nowtime, 20, "%Y-%m-%d %H:%M:%S", ltime);
+  return nowtime;
+}
 static void make_error_message(char *buf, size_t len, const char *fmt, va_list args)
 {
   char *s= buf, *end= buf + len;
-  s+= my_snprintf(s, end - s, "mysqltest: ");
+  s += my_snprintf(s, end - s, "[%s] mysqltest: ", getDateTime());
   if (cur_file && cur_file != file_stack)
   {
     s+= my_snprintf(s, end - s, "In included file \"%s\": \n",
@@ -1650,7 +2258,7 @@ void verbose_msg(const char *fmt, ...)
 
   fflush(stdout);
   va_start(args, fmt);
-  fprintf(stderr, "mysqltest: ");
+  fprintf(stderr, "[%s] mysqltest: ", getDateTime());
   if (cur_file && cur_file != file_stack)
     fprintf(stderr, "In included file \"%s\": ",
             cur_file->file_name);
@@ -2729,6 +3337,9 @@ set_result_format_version(ulong new_version)
     /* New format that also writes comments and empty lines
        from test file to result */
     break;
+  case 3:
+  case 4:
+    break;
   default:
     die("Version format %lu has not yet been implemented", new_version);
     break;
@@ -2736,6 +3347,30 @@ set_result_format_version(ulong new_version)
   opt_result_format_version= new_version;
 }
 
+
+static void
+set_explain_protocol(ulong new_proto)
+{
+  switch (new_proto){
+  case 0:
+    /* default, no explain*/
+    break;
+  case 1:
+    /* basic */
+    break;
+  case 2:
+    /* regular */
+    break;
+  case 3:
+    /* extended_noaddr */
+    break;
+  default:
+    die("Explain protocol %lu has not yet been implemented", new_proto);
+    break;
+  }
+  opt_explain_protocol = new_proto;
+  fprintf(stderr, "set explain_protcol, %ld", new_proto);
+}
 
 /*
   Set the result format version to use when generating
@@ -2770,6 +3405,36 @@ do_result_format_version(struct st_command *command)
   dynstr_free(&ds_version);
 }
 
+
+static void
+do_explain_protocol(struct st_command *command)
+{
+  long version;
+  static DYNAMIC_STRING ds_version;
+  const struct command_arg explain_protocol_args[] = {
+    {"protocol", ARG_STRING, TRUE, &ds_version, "Protocol to use"}
+  };
+
+  DBUG_ENTER("do_explain_protocol");
+
+  check_command_args(command, command->first_argument,
+                     explain_protocol_args,
+                     sizeof(explain_protocol_args)/sizeof(struct command_arg),
+                     ',');
+
+  /* Convert version  number to int */
+  if (!str2int(ds_version.str, 10, (long) 0, (long) INT_MAX, &version))
+    die("Invalid version number: '%s'", ds_version.str);
+
+//  die("set explain_protcol, %ld", version);
+  set_explain_protocol(version);
+
+  dynstr_append(&ds_res, "explain_protocol: ");
+  dynstr_append_mem(&ds_res, ds_version.str, ds_version.length);
+  dynstr_append(&ds_res, "\n");
+  dynstr_free(&ds_version);
+  DBUG_VOID_RETURN;
+}
 
 /*
   Set variable from the result of a field in a query
@@ -6998,7 +7663,7 @@ static struct my_option my_long_options[] =
    "Version of the result file format to use",
    &opt_result_format_version,
    &opt_result_format_version, 0,
-   GET_INT, REQUIRED_ARG, 1, 1, 2, 0, 0, 0},
+   GET_INT, REQUIRED_ARG, 1, 1, 4, 0, 0, 0},
   {"server-arg", 'A', "Send option value to embedded server as a parameter.",
    0, 0, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"server-file", 'F', "Read embedded server arguments from file.",
@@ -7029,11 +7694,31 @@ static struct my_option my_long_options[] =
    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"verbose", 'v', "Write more.", &verbose, &verbose, 0,
    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"use-px", OPT_AUTO_PX,
+   "automaticly run select query using px hint.",
+   &use_px, &use_px, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"force-explain-as-px", OPT_EXPLAIN_AS_PX,
+   "automaticly run explain select query using px hint.",
+   &explain_as_px, &explain_as_px, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"force-explain-as-no-px", OPT_EXPLAIN_AS_NO_PX,
+   "automaticly run explain select query using no px hint.",
+   &explain_as_no_px, &explain_as_no_px, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"version", 'V', "Output version information and exit.",
    0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"view-protocol", 0, "Use views for select.",
    &view_protocol, &view_protocol, 0,
    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  { "explain-protocol", OPT_EXPLAIN_PROTOCOL,
+   "Explain all SELECT/INSERT/REPLACE/UPDATE/DELETE statements",
+   &explain_protocol, &explain_protocol, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
+  { "json-explain-protocol", OPT_JSON_EXPLAIN_PROTOCOL,
+   "Explain all SELECT/INSERT/REPLACE/UPDATE/DELETE statements with FORMAT=JSON",
+   &json_explain_protocol, &json_explain_protocol, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   {"connect_timeout", 0,
    "Number of seconds before connection timeout.",
    &opt_connect_timeout, &opt_connect_timeout, 0, GET_UINT, REQUIRED_ARG,
@@ -7045,10 +7730,17 @@ static struct my_option my_long_options[] =
   {"plugin_dir", 0, "Directory for client-side plugins.",
     &opt_plugin_dir, &opt_plugin_dir, 0,
    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+  {"explain_protocol", OPT_INNER_EXPLAIN_PROTOCOL,
+   "If/How to explain all SELECT/INSERT/REPLACE/UPDATE/DELETE statements",
+   &opt_explain_protocol,
+   &opt_explain_protocol, 0,
+   GET_INT, REQUIRED_ARG, 0, 0, 3, 0, 0, 0},
   {"overlay-dir", 0, "Overlay directory.", &opt_overlay_dir,
     &opt_overlay_dir, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"suite-dir", 0, "Suite directory.", &opt_suite_dir,
     &opt_suite_dir, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+  { "disable-explain", 0, "close explain run.", &disable_explain, &disable_explain, 0,
+    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -7842,7 +8534,10 @@ static void handle_no_active_connection(struct st_command *command,
 
 void run_query_normal(struct st_connection *cn, struct st_command *command,
                       int flags, char *query, size_t query_len,
-                      DYNAMIC_STRING *ds, DYNAMIC_STRING *ds_warnings)
+                      DYNAMIC_STRING *ds_header,
+                      DYNAMIC_STRING *ds_sorted,
+                      DYNAMIC_STRING *last_line,
+                      DYNAMIC_STRING *ds_warnings)
 {
   MYSQL_RES *res= 0;
   MYSQL *mysql= cn->mysql;
@@ -7853,7 +8548,7 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
 
   if (!mysql)
   {
-    handle_no_active_connection(command, cn, ds);
+    handle_no_active_connection(command, cn, ds_header);
     DBUG_VOID_RETURN;
   }
 
@@ -7865,7 +8560,7 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
     if (do_send_query(cn, query, query_len))
     {
       handle_error(command, mysql_errno(mysql), mysql_error(mysql),
-		   mysql_sqlstate(mysql), ds);
+		   mysql_sqlstate(mysql), ds_header);
       goto end;
     }
   }
@@ -7886,7 +8581,7 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
       /* we've failed to collect the result set */
       cn->pending= TRUE;
       handle_error(command, mysql_errno(mysql), mysql_error(mysql),
-		   mysql_sqlstate(mysql), ds);
+		   mysql_sqlstate(mysql), ds_header);
       goto end;
 
     }
@@ -7897,7 +8592,7 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
     if (mysql_field_count(mysql) && ((res= mysql_store_result(mysql)) == 0))
     {
       handle_error(command, mysql_errno(mysql), mysql_error(mysql),
-		   mysql_sqlstate(mysql), ds);
+		   mysql_sqlstate(mysql), ds_header);
       goto end;
     }
 
@@ -7905,16 +8600,35 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
     {
       if (res)
       {
-	MYSQL_FIELD *fields= mysql_fetch_fields(res);
-	uint num_fields= mysql_num_fields(res);
+        MYSQL_FIELD *fields= mysql_fetch_fields(res);
+        uint num_fields= mysql_num_fields(res);
 
-	if (display_metadata)
-          append_metadata(ds, fields, num_fields);
+        if (display_metadata)
+          append_metadata(ds_header, fields, num_fields);
 
-	if (!display_result_vertically)
-	  append_table_headings(ds, fields, num_fields);
+        if ((3 != opt_result_format_version
+             && 4 != opt_result_format_version)
+             || match_re(&explain_st, query)) {
 
-	append_result(ds, res);
+          if (!display_result_vertically)
+             append_table_headings(ds_header, fields, num_fields);
+
+          append_result(ds_sorted, res);
+
+
+
+          //if (!disable_warnings && !mysql_more_results(mysql))
+          //{
+          //  if (append_warnings(ds_warnings, mysql) || ds_warnings->length)
+          //  {
+          //    dynstr_append_mem(ds, "Warnings:\n", 10);
+          //    dynstr_append_mem(ds, ds_warnings->str, ds_warnings->length);
+          //  }
+          //}
+
+        } else {
+          print_result_to_buf(ds_header, ds_sorted, last_line, 0, res, mysql);
+        }
       }
 
       /*
@@ -7922,10 +8636,10 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
         query to find the warnings.
       */
       if (!disable_info)
-	append_info(ds, mysql_affected_rows(mysql), mysql_info(mysql));
+        append_info(last_line, mysql_affected_rows(mysql), mysql_info(mysql));
 
       if (display_session_track_info)
-        append_session_track_info(ds, mysql);
+        append_session_track_info(last_line, mysql);
 
       /*
         Add all warnings to the result. We can't do this if we are in
@@ -7934,11 +8648,13 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
       */
       if (!disable_warnings && !mysql_more_results(mysql))
       {
-	if (append_warnings(ds_warnings, mysql) || ds_warnings->length)
-	{
-	  dynstr_append_mem(ds, "Warnings:\n", 10);
-	  dynstr_append_mem(ds, ds_warnings->str, ds_warnings->length);
-	}
+        if (!res || (res && !mysql_more_results(mysql))) {
+          if (append_warnings(ds_warnings, mysql) || ds_warnings->length)
+          {
+            dynstr_append_mem(last_line, "Warnings:\n", 10);
+            dynstr_append_mem(last_line, ds_warnings->str, ds_warnings->length);
+          }
+        }
       }
     }
 
@@ -7953,7 +8669,7 @@ void run_query_normal(struct st_connection *cn, struct st_command *command,
   {
     /* We got an error from mysql_next_result, maybe expected */
     handle_error(command, mysql_errno(mysql), mysql_error(mysql),
-		 mysql_sqlstate(mysql), ds);
+		 mysql_sqlstate(mysql), last_line);
     goto end;
   }
   DBUG_ASSERT(err == -1); /* Successful and there are no more results */
@@ -7974,6 +8690,66 @@ end:
   DBUG_VOID_RETURN;
 }
 
+/*
+  Run query in parallel mode with use_px hint
+
+  SYNOPSIS
+    run_query_parallel()
+    mysql	mysql handle
+    command	current command pointer
+    flags	flags indicating if we should SEND and/or REAP
+    query	query string to execute
+    query_len	length query string to execute
+    ds		output buffer where to store result form query
+*/
+
+void run_query_parallel(struct st_connection *cn, struct st_command *command,
+                      int flags, char *query, size_t query_len,
+                      DYNAMIC_STRING *ds_header,
+                      DYNAMIC_STRING *ds_sorted,
+                      DYNAMIC_STRING *last_line,
+                      DYNAMIC_STRING *ds_warnings)
+{
+  DYNAMIC_STRING px_query_buf;
+  DYNAMIC_STRING *px_query = &px_query_buf;
+  init_dynamic_string(px_query, "SELECT /*+ use_px parallel(3) */ ", query_len + 256, 1024);
+  dynstr_append(px_query, query + 6);
+  run_query_normal(cn, command, flags, px_query->str, px_query->length, ds_header, ds_sorted, last_line, ds_warnings);
+}
+
+/*
+ Run explain select stmt with use_px hint
+ */
+void run_explain_query_use_px(struct st_connection *cn, struct st_command *command,
+                              int flags, char *query, size_t query_len,
+                              DYNAMIC_STRING *ds_header,
+                              DYNAMIC_STRING *ds_sorted,
+                              DYNAMIC_STRING *last_line,
+                              DYNAMIC_STRING *ds_warnings)
+{
+  DYNAMIC_STRING px_query_buf;
+  DYNAMIC_STRING *px_query = &px_query_buf;
+  init_dynamic_string(px_query, "EXPLAIN SELECT /*+ use_px parallel(3) */ ", query_len + 256, 1024);
+  dynstr_append(px_query, query + 14);
+  run_query_normal(cn, command, flags, px_query->str, px_query->length, ds_header, ds_sorted, last_line, ds_warnings);
+}
+
+/*
+ Run explain select stmt with use_no_px hint
+ */
+void run_explain_query_use_no_px(struct st_connection *cn, struct st_command *command,
+                                 int flags, char *query, size_t query_len,
+                                 DYNAMIC_STRING *ds_header,
+                                 DYNAMIC_STRING *ds_sorted,
+                                 DYNAMIC_STRING *last_line,
+                                 DYNAMIC_STRING *ds_warnings)
+{
+  DYNAMIC_STRING px_query_buf;
+  DYNAMIC_STRING *px_query = &px_query_buf;
+  init_dynamic_string(px_query, "EXPLAIN SELECT /*+ no_use_px parallel(3) */ ", query_len + 256, 1024);
+  dynstr_append(px_query, query + 14);
+  run_query_normal(cn, command, flags, px_query->str, px_query->length, ds_header, ds_sorted, last_line, ds_warnings);
+}
 
 /*
   Check whether given error is in list of expected errors
@@ -8079,6 +8855,7 @@ void handle_error(struct st_command *command,
                       command->expected_errors.count));
 
   i= match_expected_error(command, err_errno, err_sqlstate);
+  trim_oracle_errmsg(&err_error, true);
 
   if (i >= 0)
   {
@@ -8186,7 +8963,7 @@ void handle_no_error(struct st_command *command)
 */
 
 void run_query_stmt(struct st_connection *cn, struct st_command *command,
-                    char *query, size_t query_len, DYNAMIC_STRING *ds,
+                    char *query, size_t query_len, DYNAMIC_STRING *ds, DYNAMIC_STRING *ds_header,
                     DYNAMIC_STRING *ds_warnings)
 {
   MYSQL_RES *res= NULL;     /* Note that here 'res' is meta data result set */
@@ -8313,10 +9090,10 @@ void run_query_stmt(struct st_connection *cn, struct st_command *command,
       uint num_fields= mysql_num_fields(res);
 
       if (display_metadata)
-        append_metadata(ds, fields, num_fields);
+        append_metadata(ds_header, fields, num_fields);
 
       if (!display_result_vertically)
-        append_table_headings(ds, fields, num_fields);
+        append_table_headings(ds_header, fields, num_fields);
 
       append_stmt_result(ds, stmt, fields, num_fields);
 
@@ -8468,7 +9245,9 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
 {
   MYSQL *mysql= cn->mysql;
   DYNAMIC_STRING *ds;
-  DYNAMIC_STRING *save_ds= NULL;
+  //DYNAMIC_STRING *save_ds= NULL;
+  DYNAMIC_STRING ds_header;
+  DYNAMIC_STRING last_line;
   DYNAMIC_STRING ds_result;
   DYNAMIC_STRING ds_sorted;
   DYNAMIC_STRING ds_warnings;
@@ -8485,8 +9264,12 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
   if (!(flags & QUERY_SEND_FLAG) && !cn->pending)
     die("Cannot reap on a connection without pending send");
   
-  init_dynamic_string(&ds_warnings, NULL, 0, 256);
+  init_dynamic_string(&ds_warnings, NULL, 0, 1024);
   ds_warn= &ds_warnings;
+  
+  // initialize output header string
+  init_dynamic_string(&ds_header, NULL, 0, 8192);
+  init_dynamic_string(&last_line, NULL, 0, 8192);
   
   /*
     Evaluate query if this is an eval command
@@ -8496,7 +9279,7 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
   {
     if (!command->eval_query.str)
       init_dynamic_string(&command->eval_query, "", command->query_len + 256,
-                          1024);
+                          8192);
     else
       dynstr_set(&command->eval_query, 0);
     do_eval(&command->eval_query, command->query, command->end, FALSE);
@@ -8517,7 +9300,7 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
   */
   if (command->require_file)
   {
-    init_dynamic_string(&ds_result, "", 1024, 1024);
+    init_dynamic_string(&ds_result, "", 8192, 8192);
     ds= &ds_result;
   }
   else
@@ -8638,17 +9421,14 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
     dynstr_free(&query_str);
   }
 
-  if (display_result_sorted)
-  {
+
     /*
        Collect the query output in a separate string
        that can be sorted before it's added to the
        global result string
     */
     init_dynamic_string(&ds_sorted, "", 1024, 1024);
-    save_ds= ds; /* Remember original ds */
-    ds= &ds_sorted;
-  }
+
 
   /*
     Find out how to run this query
@@ -8659,24 +9439,41 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
     If it is a '?' in the query it may be a SQL level prepared
     statement already and we can't do it twice
   */
-  if (ps_protocol_enabled &&
-      complete_query &&
-      match_re(&ps_re, query))
-    run_query_stmt(cn, command, query, query_len, ds, &ds_warnings);
-  else
-    run_query_normal(cn, command, flags, query, query_len,
-		     ds, &ds_warnings);
+  if (!(disable_explain && query_len >= 7 && (0 == strncmp(query, "explain", 7)))){
+    if (ps_protocol_enabled && complete_query && match_re(&ps_re, query)) {
+      run_query_stmt(cn, command, query, query_len, &ds_sorted, ds, &ds_warnings);
+    } else if (use_px && match_re(&parallel_re, query)) {
+      // auto parallel query 
+      run_query_parallel(cn, command, flags, query, query_len, ds, &ds_sorted, &last_line, &ds_warnings); 
+    } else if (explain_as_px && match_re(&explain_select_re, query)) {
+      // auto make explain query using parallel execution framework
+      run_explain_query_use_px(cn, command, flags, query, query_len, ds, &ds_sorted, &last_line, &ds_warnings); 
+    } else if (explain_as_no_px && match_re(&explain_select_re, query)) {
+      // auto make explain query using old distributed execution framework
+      run_explain_query_use_no_px(cn, command, flags, query, query_len, ds, &ds_sorted, &last_line, &ds_warnings); 
+    } else {
+      run_query_normal(cn, command, flags, query, query_len, ds, &ds_sorted, &last_line, &ds_warnings);
+    }
+  }
 
   dynstr_free(&ds_warnings);
   ds_warn= 0;
 
-  if (display_result_sorted)
+  my_bool disable_result_sorted_bak = disable_result_sorted;
+  if(query_len >= 7 && (0 == strncmp(query,"explain",7))) 
+    disable_result_sorted = true;
+  if (display_result_sorted || (!disable_result_sorted))
   {
     /* Sort the result set and append it to result */
-    dynstr_append_sorted(save_ds, &ds_sorted, 1);
-    ds= save_ds;
-    dynstr_free(&ds_sorted);
+    dynstr_append_sorted(ds, &ds_sorted, 0);
+  } else {
+    dynstr_append_mem(ds, ds_sorted.str, ds_sorted.length);
   }
+  disable_result_sorted = disable_result_sorted_bak;
+  dynstr_append_mem(ds, last_line.str, last_line.length);
+
+  dynstr_free(&ds_sorted);
+  dynstr_free(&last_line);
 
   if (sp_created)
   {
@@ -8704,6 +9501,62 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
   if (ds == &ds_result)
     dynstr_free(&ds_result);
   DBUG_VOID_RETURN;
+}
+
+
+void run_explain(struct st_connection *cn, struct st_command *command,
+                  int flags, bool json, int protocol)
+{
+  if ((flags & QUERY_REAP_FLAG) &&
+    !command->expected_errors.count &&
+    match_re(&explain_re, command->query))
+  {
+
+    st_command save_command = *command;
+    DYNAMIC_STRING query_str;
+    DYNAMIC_STRING ds_warning_messages;
+
+    init_dynamic_string(&ds_warning_messages, "", 0, 2048);
+    switch (protocol) {
+    case 1:
+      init_dynamic_string(&query_str, json ? "EXPLAIN FORMAT=JSON "
+        : "EXPLAIN BASIC ", 256, 256);
+      break;
+    case 2:
+      init_dynamic_string(&query_str, json ? "EXPLAIN FORMAT=JSON "
+        : "EXPLAIN ", 256, 256);
+      break;
+    case 3:
+      init_dynamic_string(&query_str, json ? "EXPLAIN FORMAT=JSON "
+        : "EXPLAIN EXTENDED_NOADDR ", 256, 256);
+      break;
+    default:
+      init_dynamic_string(&query_str, json ? "EXPLAIN FORMAT=JSON "
+        : "EXPLAIN ", 256, 256);
+      break;
+    }
+
+    dynstr_append_mem(&query_str, command->query,
+      command->end - command->query);
+
+    command->query = query_str.str;
+    command->query_len = query_str.length;
+    command->end = strend(command->query);
+
+    // Do not sort explain result.
+    my_bool display_result_sorted_bak = display_result_sorted;
+    my_bool disable_result_sorted_bak = disable_result_sorted;
+    display_result_sorted = FALSE;
+    disable_result_sorted = TRUE;
+    run_query(cn, command, flags);
+
+    display_result_sorted = display_result_sorted_bak;
+    disable_result_sorted = disable_result_sorted_bak;
+    dynstr_free(&query_str);
+    dynstr_free(&ds_warning_messages);
+
+    *command = save_command;
+  }
 }
 
 /****************************************************************************/
@@ -8804,9 +9657,30 @@ void init_re(void)
     "^("
     "[[:space:]]*SELECT[[:space:]])";
 
+  const char *parallel_re_str = view_re_str;
+  
+  /* Filter for queries that can be converted to EXPLAIN */
+  const char *explain_re_str =
+    "^("
+    "[[:space:]]*(SELECT|DELETE|UPDATE|INSERT|REPLACE)[[:space:]])";
+
+  const char *explain_st_str =
+    "^("
+     "[[:space:]]*(SHOW|show)[[:space:]]|"
+     "[[:space:]]*(EXPLAIN|explain)[[:space:]])";
+
+  const char *explain_select_re_str =
+    "^("
+     "(EXPLAIN|explain) (SELECT|select)[[:space:]])";
+  
   init_re_comp(&ps_re, ps_re_str);
   init_re_comp(&sp_re, sp_re_str);
   init_re_comp(&view_re, view_re_str);
+  
+  init_re_comp(&explain_re, explain_re_str);
+  init_re_comp(&parallel_re, parallel_re_str);
+  init_re_comp(&explain_select_re, explain_select_re_str);
+  init_re_comp(&explain_st, explain_st_str);
 }
 
 
@@ -8843,6 +9717,10 @@ void free_re(void)
   regfree(&ps_re);
   regfree(&sp_re);
   regfree(&view_re);
+  regfree(&explain_re);
+  regfree(&parallel_re);
+  regfree(&explain_select_re);
+  regfree(&explain_st);
 }
 
 /****************************************************************************/
@@ -9139,7 +10017,8 @@ int main(int argc, char **argv)
 
   read_command_buf= (char*)my_malloc(read_command_buflen= 65536, MYF(MY_FAE));
 
-  init_dynamic_string(&ds_res, "", 2048, 2048);
+  init_dynamic_string(&ds_res, "", 8192, 8192);
+  init_dynamic_string(&ds_result, "", 8192, 8192);
   init_alloc_root(&require_file_root, "require_file", 1024, 1024, MYF(0));
 
   parse_args(argc, argv);
@@ -9163,6 +10042,8 @@ int main(int argc, char **argv)
   var_set_int("$NON_BLOCKING_API", non_blocking_api_enabled);
   var_set_int("$SP_PROTOCOL", sp_protocol);
   var_set_int("$VIEW_PROTOCOL", view_protocol);
+  var_set_int("$EXPLAIN_PROTOCOL", explain_protocol);
+  var_set_int("$JSON_EXPLAIN_PROTOCOL", json_explain_protocol);
   var_set_int("$CURSOR_PROTOCOL", cursor_protocol);
 
   var_set_int("$ENABLED_QUERY_LOG", 1);
@@ -9198,6 +10079,8 @@ int main(int argc, char **argv)
   ps_protocol_enabled= ps_protocol;
   sp_protocol_enabled= sp_protocol;
   view_protocol_enabled= view_protocol;
+  explain_protocol_enabled = explain_protocol;
+  json_explain_protocol_enabled = json_explain_protocol;
   cursor_protocol_enabled= cursor_protocol;
 
   st_connection *con= connections;
@@ -9363,6 +10246,12 @@ int main(int argc, char **argv)
       case Q_DISABLE_INFO:
         set_property(command, P_INFO, 1);
         break;
+      case Q_ENABLE_RESULT_SORTED:
+        set_property(command, P_RESULT_SORT, 0);
+        break;
+      case Q_DISABLE_RESULT_SORTED:
+        set_property(command, P_RESULT_SORT, 1);
+        break;
       case Q_ENABLE_SESSION_TRACK_INFO:
         set_property(command, P_SESSION_TRACK, 1);
         break;
@@ -9414,6 +10303,7 @@ int main(int argc, char **argv)
       case Q_CHMOD_FILE: do_chmod_file(command); break;
       case Q_PERL: do_perl(command); break;
       case Q_RESULT_FORMAT_VERSION: do_result_format_version(command); break;
+      case Q_EXPLAIN_PROTOCOL: do_explain_protocol(command); break;
       case Q_DELIMITER:
         do_delimiter(command);
 	break;
@@ -9475,6 +10365,18 @@ int main(int argc, char **argv)
 
         /* Check for special property for this query */
         display_result_vertically|= (command->type == Q_QUERY_VERTICAL);
+
+        /*
+        We run EXPLAIN _before_ the query. If query is UPDATE/DELETE is
+        matters: a DELETE may delete rows, and then EXPLAIN DELETE will
+        usually terminate quickly with "no matching rows". To make it more
+        interesting, EXPLAIN is now first.
+        */
+        if (explain_protocol_enabled || (opt_explain_protocol != 0))
+          run_explain(cur_con, command, flags, 0, opt_explain_protocol != 0 ? opt_explain_protocol : 2);
+
+        if (json_explain_protocol_enabled)
+          run_explain(cur_con, command, flags, 1, 2);
 
 	if (save_file[0])
 	{
@@ -9550,7 +10452,7 @@ int main(int argc, char **argv)
         command->last_argument= command->end;
 
         /* Don't output comments in v1 */
-        if (opt_result_format_version == 1)
+        if (opt_result_format_version == 1 || opt_result_format_version ==3)
           break;
 
         /* Don't output comments if query logging is off */
@@ -9568,7 +10470,7 @@ int main(int argc, char **argv)
       }
       case Q_EMPTY_LINE:
         /* Don't output newline in v1 */
-        if (opt_result_format_version == 1)
+        if (opt_result_format_version == 1 || opt_result_format_version==3)
           break;
 
         /* Don't output newline if query logging is off */
@@ -10034,6 +10936,15 @@ struct st_regex
 int reg_replace(char** buf_p, int* buf_len_p, char *pattern, char *replace,
                 char *string, int icase);
 
+bool is_reg_valid(char last_start_re, char start_re){
+  if (start_re == last_start_re || 
+    start_re == '(' || start_re == '[' || start_re == '{' || start_re == '<'){
+    return true;
+  } else {
+    return false;
+  }
+}
+
 bool parse_re_part(char *start_re, char *end_re,
                    char **p, char *end, char **buf)
 {
@@ -10158,6 +11069,14 @@ void append_replace_regex(char* expr, char *expr_end, struct st_replace_regex* r
     /* done parsing the statement, now place it in regex_arr */
     if (insert_dynamic(&res->regex_arr, &reg))
       die("Out of memory");
+
+    //skip get_ddl_oracle.test
+    while (p < expr_end){
+      if (is_reg_valid(start_re, *p))
+        break;
+      else
+        p++;
+    }
   }
 
   return;
