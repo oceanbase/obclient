@@ -4,7 +4,7 @@
 # Usage: obclient-build.sh
 
 SCRIPT_DIR=$(cd "$(dirname "$0")";pwd)
-TOP_DIR=${1:-SCRIPT_DIR/../}
+TOP_DIR=${1:-${SCRIPT_DIR}/../}
 DEP_DIR=${TOP_DIR}/deps/3rd/
 PACKAGE=${2:-$(basename $0 -build.sh)}
 VERSION=${3:-`cat ${PACKAGE}-VER.txt`}
