@@ -50,7 +50,7 @@
 #endif
 
 #include <map>
-const char *VER = "2.0.0";
+const char *VER = "2.0.1";
 
 /* Don't try to make a nice table if the data is too big */
 #define MAX_COLUMN_LENGTH	     1024

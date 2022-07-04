@@ -20,7 +20,7 @@
 #include <sslopt-vars.h>
 #include <../scripts/mysql_fix_privilege_tables_sql.c>
 
-#include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h> /* OB_WELCOME_COPYRIGHT_NOTICE */
 
 #define VER "1.4"
 
@@ -278,7 +278,7 @@ get_one_option(int optid, const struct my_option *opt,
   case '?':
     printf("%s  Ver %s Distrib %s, for %s (%s)\n",
            my_progname, VER, MYSQL_SERVER_VERSION, SYSTEM_TYPE, MACHINE_TYPE);
-    puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+    puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
     puts("MariaDB utility for upgrading databases to new MariaDB versions.");
     print_defaults("my", load_default_groups);
     puts("");

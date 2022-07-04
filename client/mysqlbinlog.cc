@@ -46,7 +46,7 @@
 #include "compat56.h"
 #include "sql_common.h"
 #include "my_dir.h"
-#include <welcome_copyright_notice.h> // ORACLE_WELCOME_COPYRIGHT_NOTICE
+#include <welcome_copyright_notice.h> // OB_WELCOME_COPYRIGHT_NOTICE
 #include "sql_string.h"   // needed for Rpl_filter
 #include "sql_list.h"     // needed for Rpl_filter
 #include "rpl_filter.h"
@@ -1894,7 +1894,7 @@ static void print_version()
 static void usage()
 {
   print_version();
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("\
 Dumps a MariaDB binary log in a format usable for viewing or for piping to\n\
 the mysql command line client.\n\n");

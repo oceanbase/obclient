@@ -55,7 +55,7 @@
 #include <signal.h>
 #include <my_stacktrace.h>
 
-#include <welcome_copyright_notice.h> // ORACLE_WELCOME_COPYRIGHT_NOTICE
+#include <welcome_copyright_notice.h> // OB_WELCOME_COPYRIGHT_NOTICE
 #include <sql_string.h>
 
 #include <string>
@@ -7754,7 +7754,7 @@ void print_version(void)
 void usage()
 {
   print_version();
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("Runs a test against the MariaDB server and compares output with a results file.\n\n");
   printf("Usage: %s [OPTIONS] [database] < test_file\n", my_progname);
   print_defaults("my",load_default_groups);
