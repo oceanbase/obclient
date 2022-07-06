@@ -84,7 +84,7 @@ So, we can read full search-structure as 32-bit word
 #include "lex.h"
 #include <string.h>
 
-#include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h> /* OB_WELCOME_COPYRIGHT_NOTICE */
 
 struct hash_lex_struct
 {
@@ -381,7 +381,7 @@ int main(int argc,char **argv)
   printf("/*\n\n  Do " "not " "edit " "this " "file " "directly!\n\n*/\n");
 
   puts("/*");
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
   puts("*/");
 
   /* Broken up to indicate that it's not advice to you, gentle reader. */

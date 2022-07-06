@@ -35,6 +35,8 @@
 #include <m_ctype.h>
 #include <stdarg.h>
 #include <my_dir.h>
+#define PCRE_STATIC 1  /* Important on Windows */
+#include "pcreposix.h" /* pcreposix regex library */
 #ifndef __GNU_LIBRARY__
 #define __GNU_LIBRARY__		      // Skip warnings in getopt.h
 #endif
@@ -47,7 +49,8 @@
 #include <locale.h>
 #endif
 
-const char *VER= "15.1";
+#include <map>
+const char *VER = "2.0.2";
 
 /* Don't try to make a nice table if the data is too big */
 #define MAX_COLUMN_LENGTH	     1024
@@ -119,7 +122,7 @@ static void my_vidattr(chtype attrs)
 #endif
 
 #include "completion_hash.h"
-#include <welcome_copyright_notice.h> // ORACLE_WELCOME_COPYRIGHT_NOTICE
+#include <welcome_copyright_notice.h> // OB_WELCOME_COPYRIGHT_NOTICE
 
 #define PROMPT_CHAR '\\'
 #define DEFAULT_DELIMITER ";"
@@ -142,6 +145,22 @@ static char **defaults_argv;
 enum enum_info_type { INFO_INFO,INFO_ERROR,INFO_RESULT};
 typedef enum enum_info_type INFO_TYPE;
 
+static my_bool dbms_serveroutput = 0;
+static my_bool dbms_prepared = 0;
+static regex_t dbms_enable_re;
+static regex_t dbms_disable_re;
+MYSQL_STMT *dbms_stmt = NULL;
+static const char *dbms_enable_sql = "call dbms_output.enable()";
+static const char *dbms_disable_sql = "call dbms_output.disable()";
+static String dbms_enable_buffer;
+static String dbms_disable_buffer;
+static const char *dbms_get_line = "call dbms_output.get_line(?, ?)";
+static MYSQL_BIND dbms_ps_params[2];
+static MYSQL_BIND dbms_rs_bind[2];
+static char dbms_line_buffer[32767];
+static char dbms_status;
+static int put_stmt_error(MYSQL *con, MYSQL_STMT *stmt);
+static regex_t pl_escape_sql_re;
 static MYSQL mysql;			/* The connection */
 static my_bool ignore_errors=0,wait_flag=0,quick=0,
                connected=0,opt_raw_data=0,unbuffered=0,output_tables=0,
@@ -240,7 +259,7 @@ static int sql_connect(char *host,char *database,char *user,char *password,
 		       uint silent);
 static const char *server_version_string(MYSQL *mysql);
 static int put_info(const char *str,INFO_TYPE info,uint error=0,
-		    const char *sql_state=0);
+                    const char *sql_state = 0, my_bool oracle_mode = FALSE);
 static int put_error(MYSQL *mysql);
 static void safe_put_field(const char *pos,ulong length);
 static void xmlencode_print(const char *src, uint length);
@@ -262,6 +281,20 @@ static void report_progress(const MYSQL *mysql, uint stage, uint max_stage,
                             uint proc_info_length);
 #endif
 static void report_progress_end();
+/*ON:1, OFF:0*/
+static my_bool is_define_oracle = 1;
+static char define_char_oracle = '&';
+static my_bool is_feedback_oracle = 1;
+static int feedback_int_oracle = -1;
+static my_bool is_sqlblanklines_oracle = 1;
+static my_bool is_echo_oracle = 1;
+static my_bool prompt_cmd_oracle(const char *str, char **text);
+static my_bool set_cmd_oracle(const char *str);
+static my_bool scan_define_oracle(String *buffer, String *newbuffer);
+
+static my_bool is_source_oracle = 0;
+static std::map<void*, void*> map_global;
+static void free_map_global();
 
 /* A structure which contains information on the commands this program
    can understand. */
@@ -1108,6 +1141,62 @@ static int delimiter_index= -1;
 static int charset_index= -1;
 static bool real_binary_mode= FALSE;
 
+void init_re_comp(regex_t *re, const char* str)
+{
+  int err = regcomp(re, str, (REG_EXTENDED | REG_ICASE));
+  if (err)
+  {
+    char erbuf[100];
+    regerror(err, re, erbuf, sizeof(erbuf));
+    put_info(erbuf, INFO_INFO);
+  }
+}
+void init_dbms_output(void)
+{
+  const char *dbms_enable_re_str =
+    "^("
+    "[[:space:]]*SET[[:space:]]+SERVEROUTPUT[[:space:]]+ON[[:space:]]*)";
+
+  const char *dbms_disable_re_str =
+    "^("
+    "[[:space:]]*SET[[:space:]]+SERVEROUTPUT[[:space:]]+OFF[[:space:]]*)";
+
+  init_re_comp(&dbms_enable_re, dbms_enable_re_str);
+  init_re_comp(&dbms_disable_re, dbms_disable_re_str);
+
+  memset(&dbms_ps_params, 0, sizeof(dbms_ps_params));
+  dbms_ps_params[0].buffer_type = MYSQL_TYPE_NULL;
+  dbms_ps_params[0].is_null = 0;
+  dbms_ps_params[1].buffer_type = MYSQL_TYPE_NULL;
+  dbms_ps_params[1].is_null = 0;
+
+  dbms_rs_bind[0].buffer = dbms_line_buffer;
+  dbms_rs_bind[0].is_null = &dbms_rs_bind[0].is_null_value;
+  dbms_rs_bind[0].buffer_length = sizeof(dbms_line_buffer);
+  dbms_rs_bind[1].buffer = &dbms_status;
+  dbms_rs_bind[1].buffer_length = sizeof(dbms_status);
+
+  dbms_enable_buffer.append(dbms_enable_sql, strlen(dbms_enable_sql));
+  dbms_disable_buffer.append(dbms_disable_sql, strlen(dbms_disable_sql));
+}
+void free_dbms_output(){
+  regfree(&dbms_enable_re);
+  regfree(&dbms_disable_re);
+}
+void init_pl_sql(void)
+{
+  const char *pl_escape_sql_re_str =
+    "^("
+    "[[:space:]]*(BEGIN|DECLARE)[[:space:]]+[[:alnum:]_]+[[:space:]]*|"
+    "[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?"
+    "(PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?)[[:space:]]+"
+    ")";
+  init_re_comp(&pl_escape_sql_re, pl_escape_sql_re_str);
+}
+void free_pl_sql(void)
+{
+  regfree(&pl_escape_sql_re);
+}
 
 int main(int argc,char *argv[])
 {
@@ -1122,7 +1211,7 @@ int main(int argc,char *argv[])
   delimiter_str= delimiter;
   default_prompt = my_strdup(getenv("MYSQL_PS1") ? 
 			     getenv("MYSQL_PS1") : 
-			     "\\N [\\d]> ",MYF(MY_WME));
+			     "obclient [\\d]> ",MYF(MY_WME));
   current_prompt = my_strdup(default_prompt,MYF(MY_WME));
   prompt_counter=0;
   aborted= 0;
@@ -1220,11 +1309,10 @@ int main(int argc,char *argv[])
     put_info("Welcome to the OceanBase.  Commands end with ; or \\g.",
              INFO_INFO);
     my_snprintf((char*) glob_buffer.ptr(), glob_buffer.alloced_length(),
-            "Your %s connection id is %lu\nServer version: %s\n",
-            mysql_get_server_name(&mysql),
+            "Your OceanBase connection id is %lu\nServer version: %s\n",
             mysql_thread_id(&mysql), server_version_string(&mysql));
     put_info((char*) glob_buffer.ptr(),INFO_INFO);
-    put_info(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"), INFO_INFO);
+    put_info(OB_WELCOME_COPYRIGHT_NOTICE("2000"), INFO_INFO);
   }
 
 #ifdef HAVE_READLINE
@@ -1275,6 +1363,8 @@ int main(int argc,char *argv[])
   sprintf(buff, "%s",
 	  "Type 'help;' or '\\h' for help. Type '\\c' to clear the current input statement.\n");
   put_info(buff,INFO_INFO);
+  init_dbms_output();
+  init_pl_sql();
   status.exit_status= read_and_execute(!status.batch);
   if (opt_outfile)
     end_tee();
@@ -1333,6 +1423,9 @@ sig_handler mysql_end(int sig)
     my_free(embedded_server_args[--embedded_server_arg_count]);
   mysql_server_end();
   free_defaults(defaults_argv);
+  free_dbms_output();
+  free_pl_sql();
+  free_map_global();
   my_end(my_end_arg);
   exit(status.exit_status);
 }
@@ -1706,7 +1799,7 @@ static void usage(int version)
 
   if (version)
     return;
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("Usage: %s [OPTIONS] [database]\n", my_progname);
   print_defaults("my", load_default_groups);
   puts("");
@@ -2036,7 +2129,8 @@ static int read_and_execute(bool interactive)
 			     "    `> " :
 			     "    \"> "));
       if (opt_outfile && glob_buffer.is_empty())
-	fflush(OUTFILE);
+	    fflush(OUTFILE);
+      is_source_oracle = 0;
 
 #if defined(__WIN__)
       tee_fputs(prompt, stdout);
@@ -2091,6 +2185,29 @@ static int read_and_execute(bool interactive)
         status.exit_status= 0;
       break;
     }
+
+    //support oracle mode prompt
+    char *text = NULL;
+    if (mysql.oracle_mode && (named_cmds || glob_buffer.is_empty()) &&
+      !ml_comment && !in_string && prompt_cmd_oracle(line, &text)) {
+      if (text == NULL) {
+        text = (char*)"";
+      }
+      tee_puts(text, stdout);
+      continue;
+    }
+
+    //support oracle mode sqlblanklines, except pl 
+    if (mysql.oracle_mode && !is_sqlblanklines_oracle && !glob_buffer.is_empty()){
+      char *p = line;
+      while (my_isspace(charset_info, *p)) p++;
+
+      if (strlen(p) == 0 && 0 != (regexec(&pl_escape_sql_re, glob_buffer.c_ptr_safe(), 0, 0, 0))) {
+        glob_buffer.length(0);
+        continue;
+      }
+    }
+    
 
     /*
       Check if line is a mysql command line
@@ -3226,8 +3343,30 @@ com_go(String *buffer,char *line __attribute__((unused)))
     buffer->length(0);				// Remove query on error
     return opt_reconnect ? -1 : 1;          // Fatal error
   }
-  if (verbose)
-    (void) com_print(buffer,0);
+
+  if (mysql.oracle_mode){
+    //oracle mode source supprt echo
+    if (verbose || (is_echo_oracle && is_source_oracle))
+      (void)com_print(buffer, 0);
+  } else {
+    if (verbose)
+      (void)com_print(buffer, 0);
+  }
+
+  if (mysql.oracle_mode) {
+    /*set cmd oracle return 1 support set cmd ok*/
+    if (set_cmd_oracle(buffer->c_ptr_safe()))
+      return 0;
+
+    //oracle mode define '&' replace
+    if (is_define_oracle){
+      String newbuffer;
+      if (scan_define_oracle(buffer, &newbuffer)){
+        buffer->length(0);
+        buffer->append(newbuffer);
+      }
+    }
+  }
 
   if (skip_updates &&
       (buffer->length() < 4 || my_strnncoll(charset_info,
@@ -3339,7 +3478,21 @@ com_go(String *buffer,char *line __attribute__((unused)))
 	*pos++= 's';
     }
     strmov(pos, time_buff);
-    put_info(buff,INFO_RESULT);
+
+    if (mysql.oracle_mode){
+      if (is_feedback_oracle){
+        if (feedback_int_oracle <= 0){
+          put_info(buff, INFO_RESULT);
+        } else if (!result){
+          put_info(buff, INFO_RESULT);
+        } else if (result && (mysql_num_rows(result)==0 || mysql_num_rows(result) >= feedback_int_oracle)){
+          put_info(buff, INFO_RESULT);
+        }
+      }
+    } else {
+      put_info(buff, INFO_RESULT);
+    }
+
     if (mysql_info(&mysql))
       put_info(mysql_info(&mysql),INFO_RESULT);
     put_info("",INFO_RESULT);			// Empty row
@@ -3356,12 +3509,50 @@ com_go(String *buffer,char *line __attribute__((unused)))
 end:
 
  /* Show warnings if any or error occurred */
-  if (show_warnings == 1 && (warnings >= 1 || error))
+  if (!mysql.oracle_mode && show_warnings == 1 && (warnings >= 1 || error))
     print_warnings();
 
   if (!error && !status.batch && 
       (mysql.server_status & SERVER_STATUS_DB_DROPPED))
     get_current_db();
+
+  if (dbms_serveroutput) {
+    uint inner_error = 0;
+    do {
+      if (NULL == dbms_stmt && !(dbms_stmt = mysql_stmt_init(&mysql))) {
+        inner_error = put_error(&mysql);
+      } else if (!dbms_prepared && mysql_stmt_prepare(dbms_stmt, dbms_get_line, strlen(dbms_get_line))) {
+        inner_error = put_stmt_error(&mysql, dbms_stmt);
+      } else {
+        dbms_prepared = 1;
+
+        if (mysql_stmt_bind_param(dbms_stmt, dbms_ps_params)) {
+          inner_error = put_stmt_error(&mysql, dbms_stmt);
+        } else if (mysql_stmt_execute(dbms_stmt)) {
+          inner_error = put_stmt_error(&mysql, dbms_stmt);
+        } else if (mysql_stmt_bind_result(dbms_stmt, dbms_rs_bind)) {
+          inner_error = put_stmt_error(&mysql, dbms_stmt);
+        } else if (mysql_stmt_fetch(dbms_stmt)) {
+          inner_error = put_stmt_error(&mysql, dbms_stmt);
+        } else {
+          if (!error && dbms_status == '0' && !(*dbms_rs_bind[0].is_null)) {
+            //put_info(dbms_line_buffer, INFO_RESULT);
+            tee_puts(dbms_line_buffer, stdout); //dbms enable, Certain output
+          }
+
+          mysql_stmt_free_result(dbms_stmt);
+          err = mysql_stmt_next_result(dbms_stmt);
+          if (err == 0) {
+            inner_error = put_info(ER(CR_UNKNOWN_ERROR), INFO_ERROR, CR_UNKNOWN_ERROR,
+              unknown_sqlstate, mysql.oracle_mode);
+          } else if (err > 0) {
+            if (dbms_stmt->state != MYSQL_STMT_FETCH_DONE)
+              inner_error = put_stmt_error(&mysql, dbms_stmt);
+          }
+        }
+      }
+    } while (!inner_error && dbms_status == '0');
+  }
 
   executing_query= 0;
   return error;				/* New command follows */
@@ -4069,8 +4260,8 @@ com_tee(String *buffer __attribute__((unused)),
 {
   char file_name[FN_REFLEN], *end, *param;
 
-  if (status.batch)
-    return 0;
+  //if (status.batch)
+  //  return 0;
   while (my_isspace(charset_info,*line))
     line++;
   if (!(param = strchr(line, ' '))) // if outfile wasn't given, use the default
@@ -4356,6 +4547,7 @@ static int com_source(String *buffer __attribute__((unused)),
   STATUS old_status;
   FILE *sql_file;
   my_bool save_ignore_errors;
+  is_source_oracle = 1;
 
   /* Skip space from file name */
   while (my_isspace(charset_info,*line))
@@ -4447,6 +4639,12 @@ com_use(String *buffer __attribute__((unused)), char *line)
 {
   char *tmp, buff[FN_REFLEN + 1];
   int select_db;
+
+  if (mysql.oracle_mode)
+  {
+    my_snprintf(buff, FN_REFLEN + 1, "unknown command \"%.*s\" - rest of line ignored.", (int)strlen(line), line);
+    return put_info(buff, INFO_ERROR, 42, NULL, mysql.oracle_mode);
+  }
 
   bzero(buff, sizeof(buff));
   strmake_buf(buff, line);
@@ -4816,7 +5014,7 @@ com_status(String *buffer __attribute__((unused)),
   tee_fprintf(stdout, "Using outfile:\t\t'%s'\n", opt_outfile ? outfile : "");
 #endif
   tee_fprintf(stdout, "Using delimiter:\t%s\n", delimiter);
-  tee_fprintf(stdout, "Server:\t\t\t%s\n", mysql_get_server_name(&mysql));
+  //tee_fprintf(stdout, "Server:\t\t\t%s\n", mysql_get_server_name(&mysql));
   tee_fprintf(stdout, "Server version:\t\t%s\n", server_version_string(&mysql));
   tee_fprintf(stdout, "Protocol version:\t%d\n", mysql_get_proto_info(&mysql));
   tee_fprintf(stdout, "Connection:\t\t%s\n", mysql_get_host_info(&mysql));
@@ -4935,7 +5133,7 @@ server_version_string(MYSQL *con)
 }
 
 static int
-put_info(const char *str,INFO_TYPE info_type, uint error, const char *sqlstate)
+put_info(const char *str, INFO_TYPE info_type, uint error, const char *sqlstate, my_bool oracle_mode)
 {
   FILE *file= (info_type == INFO_ERROR ? stderr : stdout);
   static int inited=0;
@@ -5023,8 +5221,15 @@ static int
 put_error(MYSQL *con)
 {
   return put_info(mysql_error(con), INFO_ERROR, mysql_errno(con),
-		  mysql_sqlstate(con));
+		  mysql_sqlstate(con), con->oracle_mode);
 }  
+
+static int
+put_stmt_error(MYSQL *con, MYSQL_STMT *stmt)
+{
+  return put_info(mysql_stmt_error(stmt), INFO_ERROR, mysql_stmt_errno(stmt),
+    mysql_stmt_sqlstate(stmt), mysql.oracle_mode);
+}
 
 
 static void remove_cntrl(String &buffer)
@@ -5080,6 +5285,12 @@ void tee_putc(int c, FILE *file)
     putc(c, OUTFILE);
 }
 
+void tee_outfile(const char *s) {
+  if (opt_outfile)
+  {
+    fputs(s, OUTFILE);
+  }
+}
 
 /** 
   Write as many as 52+1 bytes to buff, in the form of a legible duration of time.
@@ -5378,3 +5589,275 @@ static void report_progress_end()
 {
 }
 #endif
+
+
+static my_bool prompt_cmd_oracle(const char *str, char **text) {
+  my_bool rst = 0;
+  char *p = (char*)str;
+  char *start = NULL, *end = NULL;
+  int len = 0;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  start = p;
+  while (*p != '\0' && !my_isspace(charset_info, *p))
+    p++;
+  len = p - start;
+  if (strncasecmp("prompt", start, len ) != 0 || len<3){
+    return rst;
+  }
+
+  rst = 1;
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  *text = p;
+  return rst;
+}
+
+
+static int is_on_off(const char* str, int len){
+  if (strncasecmp("on", str, len)==0 && len == 2){
+    return 1;
+  } else if(strncasecmp("off", str, len) == 0 && len == 3){
+    return 0;
+  } else {
+    return -1;
+  }
+}
+static int to_digit(const char* str, int len){
+  int i = 0;
+  for(i =0; i < len; i++){
+    if (!my_isdigit(charset_info, *(str+i)))
+      return -1;
+  }
+  return atoi(str);
+}
+static my_bool set_cmd_oracle(const char *str){
+  //set define on/off/* ...
+  //set feedback on/off/n
+  //set echo on/off
+  //set sqlblanklines on/off
+  //set serveroutput on/off
+
+  my_bool rst = 0;
+  char *p = (char*)str;
+  char *name_start = NULL, *name_end = NULL;
+  char *start = NULL, *end = NULL;
+  int name_len = 0, len = 0;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  if (strncasecmp("set ", p, 4) == 0) {
+    p = p + 4;
+  } else {
+    return rst;
+  }
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  name_start = p;
+  while (*p != '\0' && !my_isspace(charset_info, *p))
+    p++;
+  name_len = p - name_start;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  start = p;
+  len = strlen(p);
+
+  if (name_len<=0 || len<=0){
+    return rst;
+  }
+
+  if (strncasecmp("define", name_start, name_len)==0 && name_len>=3){
+    rst = 1;
+    if (len == 1){
+      if (my_isdigit(charset_info, *start) || my_isalpha(charset_info, *start) || *start==' '||*start ==' '){
+        put_info("SP2-0272: define Characters cannot be alphanumeric or blank", INFO_INFO);
+      } else {
+        define_char_oracle = *start;
+        is_define_oracle = 1;
+      }
+    } else if (is_on_off(start, len)>=0){
+      is_define_oracle = is_on_off(start, len);
+      if (is_define_oracle==1){
+        define_char_oracle = '&';
+      }
+    } else {
+      put_info("SP2-0268: define value is invalid", INFO_INFO);
+    }
+  } else if (strncasecmp("feedback", name_start, name_len)==0 && name_len>=4){
+    rst = 1;
+    feedback_int_oracle = to_digit(start, len);
+    if (feedback_int_oracle>=0){
+      if (feedback_int_oracle>50000){
+        put_info("SP2-0267: feedback value is (0-50000)", INFO_INFO);
+      } else {
+        is_feedback_oracle = feedback_int_oracle > 0 ? 1 : 0;
+      }
+    } else if (is_on_off(start, len) >= 0) {
+      is_feedback_oracle = is_on_off(start, len);
+      feedback_int_oracle = -1;
+    } else {
+      put_info("SP2-0268: feedback value is invalid", INFO_INFO);
+    }
+  } else if (strncasecmp("echo", name_start, 4)== 0){
+    rst = 1;
+    if (is_on_off(start, len) >= 0){
+      is_echo_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: echo value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("sqlblanklines", name_start, name_len)==0 && name_len>=5){
+    rst = 1;
+    if (is_on_off(start, len) >= 0){
+      is_sqlblanklines_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: sqlblanklines value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("serveroutput", name_start, 12) == 0){
+    rst = 1;
+    if (is_on_off(start, len) == 1){
+      uint error = mysql_real_query_for_lazy(dbms_enable_buffer.ptr(), dbms_enable_buffer.length());
+      if (!error) {
+        dbms_serveroutput = 1;
+      } else {
+        put_info("set serveroutput on error!", INFO_ERROR);
+      }
+    } else if (is_on_off(start, len) == 0){
+      uint error = mysql_real_query_for_lazy(dbms_disable_buffer.ptr(), dbms_disable_buffer.length());
+      if (!error) {
+        dbms_serveroutput = 0;
+      } else {
+        put_info("set serveroutput off error!", INFO_ERROR);
+      }
+    } else {
+      put_info("SP2-0265: serveroutput value is ON or OFF", INFO_INFO);
+    }
+  }
+  return rst;
+}
+
+static void get_end_str(char define, String *endstr){
+  char *p = (char*)"~!@#$%^&*()+`={}|[]\:\";'<>?,./\t\r\n\\ ";
+  endstr->length(0);
+  while (*p!='\0'){
+    if (*p != define)
+      endstr->append_char(*p);
+    p++;
+  }
+}
+static void get_input_str(String *varkey, String *varval, int defcount){
+#define MAX_FGETS 4096
+  char buf[MAX_FGETS] = { 0 };
+  std::map<void*, void*>::iterator iter;
+  //find from map_global
+  varval->length(0);
+  for(iter = map_global.begin(); iter != map_global.end(); iter++){
+    if (strcmp((char*)iter->first, varkey->c_ptr_safe()) == 0){
+      varval->append((char*)iter->second, strlen((char*)iter->second));
+      return;
+    }
+  }
+
+  tee_fprintf(stdout, "Please input %s val:  ", varkey->c_ptr_safe());
+  fgets(buf, MAX_FGETS, stdin);
+  if (buf[strlen(buf)-1] == '\n'){
+    buf[strlen(buf) - 1] = '\0';
+  }
+  tee_outfile(buf);
+  tee_outfile("\n");
+  varval->append(buf);
+  if (defcount>1){
+    void *key = my_malloc(strlen(varkey->c_ptr_safe())+1, MYF(MY_WME));
+    void *val = my_malloc(strlen(varval->c_ptr_safe())+1, MYF(MY_WME));
+    if (key != NULL && val != NULL){
+      strcpy((char*)key, varkey->c_ptr_safe());
+      strcpy((char*)val, varval->c_ptr_safe());
+      map_global[key] = val;
+    } else {
+      my_free(key); my_free(val);
+    }
+  }
+}
+static void free_map_global(){
+  std::map<void*, void*>::iterator iter;
+  for (iter = map_global.begin(); iter != map_global.end(); iter++) {
+    my_free(iter->first);
+    my_free(iter->second);
+  }
+  map_global.clear();
+}
+static my_bool scan_define_oracle(String *buffer, String *newbuffer){
+  int line_idx = 1, def_count = 0;
+  char *p = buffer->c_ptr_safe();
+  char *start=NULL; //var address
+  my_bool is_scan = 0;
+  String endstr, old_line, new_line, var_key, var_value;
+  get_end_str(define_char_oracle, &endstr);
+  
+  //check define char to end
+  while (*p != '\0'){
+    if (*p == define_char_oracle) {  //define start
+      while(*p != '\0' &&(my_isspace(charset_info, *p) || *p==define_char_oracle)){
+        if (*p == define_char_oracle){  //second define
+          def_count++;
+          old_line.append_char(*p);
+        }
+        p++;
+      }
+      start = p;
+      while(*p!='\0'){
+        const char* p1 = strchr(endstr.c_ptr_safe(), *p); //define end
+        if (p1 != NULL)
+          break;
+        old_line.append_char(*p++);
+      }
+
+      if (p != start){  //var is valid, else invalid return
+        var_key.length(0);
+        var_key.append(start, p - start);
+        get_input_str(&var_key, &var_value, def_count);
+        newbuffer->append(var_value);
+        new_line.append(var_value);
+        start = NULL;  //wait new var
+        is_scan = 1;
+        def_count = 0;
+      } else {
+        //var error, return
+        start = NULL;
+        is_scan = 0;
+        def_count = 0;
+        return 0;
+      }
+    }
+
+    if (*p != '\0'){
+      newbuffer->append_char(*p);
+      if (*p != '\n') {
+        new_line.append_char(*p);
+        old_line.append_char(*p);
+      }
+    }
+    //output info...
+    if (*p == '\n' || *p == '\0' || *(p + 1) == '\0') {
+      if (is_scan) {
+        is_scan = 0;
+        tee_fprintf(stdout, "Old Val  %d:   %s\n", line_idx, old_line.c_ptr_safe());
+        tee_fprintf(stdout, "New Val  %d:   %s\n", line_idx, new_line.c_ptr_safe());
+      }
+      old_line.length(0);
+      new_line.length(0);
+      line_idx++;
+    }
+
+    if (*p != '\0')
+      p++;
+  }
+  return 1;
+}

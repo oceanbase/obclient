@@ -31,7 +31,7 @@
 #include <../sql/sql_yacc.h>
 #include <lex.h>
 
-#include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h> /* OB_WELCOME_COPYRIGHT_NOTICE */
 
 /*
   This is a tool used during build only,
@@ -334,7 +334,7 @@ void print_tokens()
 int main(int argc,char **argv)
 {
   puts("/*");
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2011"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2011"));
   puts("*/");
 
   printf("/*\n");

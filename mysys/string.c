@@ -116,6 +116,75 @@ my_bool dynstr_append_mem(DYNAMIC_STRING *str, const char *append,
 }
 
 
+my_bool dynstr_append_char(DYNAMIC_STRING *str, const char c)
+{
+  char *new_ptr;
+  if (str->length + 1 >= str->max_length) {
+    size_t new_length = (str->length + 1 + str->alloc_increment) /
+      str->alloc_increment;
+    new_length *= str->alloc_increment;
+    if (!(new_ptr = (char*)my_realloc(
+      str->str, new_length, MYF(MY_WME))))
+      return TRUE;
+    str->str = new_ptr;
+    str->max_length = new_length;
+  }
+
+  memcpy(str->str + str->length, &c, 1);
+  str->length += 1;
+  return FALSE;
+}
+
+my_bool dynstr_append_cstring(DYNAMIC_STRING *str, const char *fmt, ...)
+{
+  int ret = 0;
+  char *new_ptr;
+  if (str->length + 1 >= str->max_length) {
+
+    size_t new_length = (str->length + 1 + str->alloc_increment) /
+      str->alloc_increment;
+    new_length *= str->alloc_increment;
+    if (!(new_ptr = (char*)my_realloc(
+      str->str, new_length, MYF(MY_WME))))
+      return TRUE;
+    str->str = new_ptr;
+    str->max_length = new_length;
+  }
+
+  va_list args;
+
+  va_start(args, fmt);
+  if (0 < (ret = vsnprintf(str->str + str->length,
+    str->max_length - str->length,
+    fmt,
+    args))
+    && ret < str->max_length - str->length) {
+    str->length += ret;
+  }
+  else if (ret < 0) {
+    return TRUE;
+  }
+  else {
+
+    size_t new_length = (str->length + ret + str->alloc_increment) /
+      str->alloc_increment;
+    new_length *= str->alloc_increment;
+    if (!(new_ptr = (char*)my_realloc(
+      str->str, new_length, MYF(MY_WME))))
+      return TRUE;
+    str->str = new_ptr;
+    str->max_length = new_length;
+
+    if (!(0 < (ret = vsnprintf(str->str + str->length, str->max_length - str->length, fmt, args))
+      && ret < str->max_length - str->length)) {
+      return TRUE;
+    }
+    str->length += ret;
+  }
+  va_end(args);
+  return FALSE;
+}
+
 my_bool dynstr_trunc(DYNAMIC_STRING *str, size_t n)
 {
   str->length-=n;
