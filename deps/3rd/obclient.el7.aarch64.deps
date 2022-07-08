@@ -4,5 +4,5 @@ arch=aarch64
 repo=https://mirrors.aliyun.com/oceanbase/development-kit/el/7/aarch64/
 
 [deps]
-devdeps-openssl-static-1.0.1e-11.el7.aarch64.rpm
+devdeps-openssl-static-1.0.1e-12.el7.aarch64.rpm
 devdeps-ncurses-static-6.2-5.el7.aarch64.rpm
