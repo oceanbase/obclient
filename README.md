@@ -1,49 +1,49 @@
-# 什么是 OceanBase Client
+# OBClient overview
 
-OceanBase Client（简称 OBClient） 是一个基于 MariaDB 开发的客户端工具。您可以使用 OBClient 访问 OceanBase 数据库的集群。OBClient 采用 GPL 协议。
+OceanBase Client (OBClient) is a client tool developed based on MariaDB-CLI, which can be used to connect to OceanBase Server/Proxy. OBClient is licensed under the General Public License (GPL).
 
-OBClient 依赖 libobclient。libobclient 是一个基于 MariaDB 的 mariadb-connector-c 开发的 OceanBase C API Lib 库。libobclient 允许 C/C++ 程序以一种较为底层的方式访问 OceanBase 数据库集群。libobclient 支持使用 OceanBase 数据库的最新数据模型。libobclient 采用 LGPL 协议。
+OBClient depends on LibobClient. LibobClient is an OceanBase C API Lib library developed based on MariaDB Connector/C. LibobClient allows C/C++ programs to access OceanBase clusters from the underlying layer. LibobClient supports the latest data model of OceanBase Database. It is licensed under the Lesser General Public License (LGPL).
 
-## 如何获取 OBClient
+## Obtain OBClient
 
-按以下方式获取 OBClient：
+You can obtain OBClient in the following two ways.
 
-## 通过 YUM 源攻取 OBClient
+## Obtain OBClient from the YUM repository
 
 ```shell
-# 添加 yum 源
+# Add the YUM repository.
 sudo yum install -y yum-utils
 sudo yum-config-manager \
-   --add-repo \
-  https://mirrors.aliyun.com/oceanbase/OceanBase.repo
+   --add-repo \
+  https://mirrors.aliyun.com/oceanbase/OceanBase.repo
    
-# 安装 OBClient
+# Install OBClient.
 sudo yum install obclient
 ```
 
-### 通过源码构建 OBClient
+### Build OBClient from the source code
 
 ```shell
 yum install -y git cmake gcc make openssl-devel ncurses-devel rpm-build  gcc-c++ bison bison-devel zlib-devel gnutls-devel libxml2-devel openssl-devel libevent-devel libaio-devel
 cd rpm
-# 打包obclient的rpm包
+# Compress the program of OBClient in an RPM package.
 sh obclient-build.sh
-进入到libobclient的仓库
+Access the repository of LibobClient.
 cd rpm
-#打包libobclient的rpm 这里面主要是so和头文件
+# Compress the program of LibobClient in an RPM package, which mainly contains the so and header files.
 sh libobclient-build.sh
-#安装，需要先安装libobclient的rpm，再安装obclient的rpm。
+# Install the RPM package of LibobClient and then the RPM package of OBClient.
 ```
 
-## 使用限制
+## Limits
 
-OBClient 暂时不支持部分 Oracle 类型的写入。例如 blob 和 raw 等。
+OBClient does not support the writing of some Oracle data types, such as BLOB and RAW.
 
-## 操作指南
+## Operation guide
 
 ### Statement
 
-C API 详细信息，参考 [MySQL C API 基础函数文档](https://dev.mysql.com/doc/c-api/5.7/en/c-api-function-descriptions.html)。代码示例如下：
+For more information about the C APIs, see [MySQL C API Basic Function Descriptions](https://dev.mysql.com/doc/c-api/5.7/en/c-api-function-descriptions.html). Sample code:
 
 ```cpp
 /* connect to server with the CLIENT_MULTI_STATEMENTS option */
@@ -101,9 +101,9 @@ do {
 mysql_close(mysql);
 ```
 
-## Prepared Statement
+## Prepared statement
 
-C API 详细信息，参考 [MySQL C API 预置语句函数文档](https://dev.mysql.com/doc/c-api/5.7/en/c-api-prepared-statement-function-descriptions.html)。代码示例如下：
+For more information about the C APIs, see [MySQL C API Prepared Statement Function Descriptions](https://dev.mysql.com/doc/c-api/5.7/en/c-api-prepared-statement-function-descriptions.html). Sample code:
 
 ```cpp
 MYSQL_STMT *stmt;
