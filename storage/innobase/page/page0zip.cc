@@ -5066,8 +5066,8 @@ bool page_zip_verify_checksum(const byte *data, size_t size)
 
 		return stored == page_zip_calc_checksum(
 			data, size, SRV_CHECKSUM_ALGORITHM_CRC32);
-	case SRV_CHECKSUM_ALGORITHM_NONE:
-		return TRUE;
+	//case SRV_CHECKSUM_ALGORITHM_NONE:
+	//	return TRUE;
 	}
 
 	return FALSE;

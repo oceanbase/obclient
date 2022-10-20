@@ -810,7 +810,7 @@ _rl_overwrite_char (count, c)
 {
   int i;
 #if defined (HANDLE_MULTIBYTE)
-  char mbkey[MB_LEN_MAX];
+  char mbkey[MB_LEN_MAX] = {0};
 
   /* Read an entire multibyte character sequence to insert COUNT times. */
   if (count > 0 && MB_CUR_MAX > 1 && rl_byte_oriented == 0)

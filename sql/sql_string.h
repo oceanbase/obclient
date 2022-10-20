@@ -585,7 +585,8 @@ public:
 
     if (!Ptr || Ptr[str_length])              // Should be safe
       (void) realloc(str_length);
-    return Ptr;
+
+    return Ptr ? Ptr : NULL;
   }
   inline char *c_ptr_quick()
   {
@@ -597,9 +598,10 @@ public:
   {
     if (Ptr && str_length < Alloced_length)
       Ptr[str_length]=0;
-    else
-      (void) realloc(str_length);
-    return Ptr;
+    else 
+      (void)realloc(str_length);
+
+    return Ptr ? Ptr : NULL;
   }
 
   inline void free()

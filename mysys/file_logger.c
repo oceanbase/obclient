@@ -66,6 +66,7 @@ LOGGER_HANDLE *logger_open(const char *path,
   if (rotations > 999)
     return 0;
 
+  memset(&new_log, 0, sizeof(new_log));
   new_log.rotations= rotations;
   new_log.size_limit= size_limit;
   new_log.path_len= strlen(fn_format(new_log.path, path,

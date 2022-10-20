@@ -399,6 +399,9 @@ static char *process_args(CHARSET_INFO *cs, char *to, char *end,
   PRINT_INFO print_arr[MAX_PRINT_INFO];
   size_t idx= 0, arg_count= arg_index;
 
+  memset(args_arr, 0, sizeof(args_arr));
+  memset(print_arr, 0, sizeof(print_arr));
+
 start:
   /* Here we are at the beginning of positional argument, right after $ */
   arg_index--;

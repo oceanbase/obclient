@@ -147,7 +147,8 @@ static int free_tree(TREE *tree, my_bool abort, myf free_flags)
     {
       if ((error= delete_tree_element(tree, tree->root, abort)))
       {
-        first_error= first_error ? first_error : error;
+        if(first_error == 0)
+          first_error= error;
         abort= 1;
       }
     }
@@ -157,8 +158,10 @@ static int free_tree(TREE *tree, my_bool abort, myf free_flags)
       {
         if (tree->memory_limit)
           (*tree->free)(NULL, free_init, tree->custom_arg);
-	if ((error= delete_tree_element(tree, tree->root, abort)))
-          first_error= first_error ? first_error : error;
+        if ((error= delete_tree_element(tree, tree->root, abort))) {
+          if (first_error == 0)
+            first_error = error;
+        }
         if (tree->memory_limit)
           (*tree->free)(NULL, free_end, tree->custom_arg);
       }
@@ -214,12 +217,15 @@ static int delete_tree_element(TREE *tree, TREE_ELEMENT *element,
       if ((error= (*tree->free)(ELEMENT_KEY(tree,element), free_free,
                                 tree->custom_arg)))
       {
-        first_error= first_error ? first_error : error;
+        if (first_error == 0) 
+          first_error=error;
         abort= 1;
       }
     }
-    if ((error= delete_tree_element(tree, element->right, abort)))
-      first_error= first_error ? first_error : error;
+    if ((error= delete_tree_element(tree, element->right, abort))){
+      if (first_error == 0)
+        first_error = error;
+    }
     if (tree->with_delete)
       my_free(element);
   }

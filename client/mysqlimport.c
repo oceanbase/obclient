@@ -34,7 +34,7 @@
 
 #include "mysql_version.h"
 
-#include <welcome_copyright_notice.h>   /* OB_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h>   /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 
 /* Global Thread counter */
@@ -204,7 +204,7 @@ static void usage(void)
   puts("Copyright 2008-2011 Oracle and Monty Program Ab.");
   puts("Copyright 2012-2019 MariaDB Corporation Ab.");
   print_version();
-  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("\
 Loads tables from text files in various formats.  The base name of the\n\
 text file must be the name of the table that should be used.\n\

@@ -1052,6 +1052,8 @@ compute_lcd_of_matches (match_list, matches, text)
   int v;
   mbstate_t ps1, ps2;
   wchar_t wc1, wc2;
+  memset (&ps1, 0, sizeof (mbstate_t));
+  memset (&ps2, 0, sizeof (mbstate_t));
 #endif
 
   /* If only one match, just use that.  Otherwise, compare each
@@ -1163,7 +1165,8 @@ compute_lcd_of_matches (match_list, matches, text)
 	  /* sort the list to get consistent answers. */
 	  qsort (match_list+1, matches, sizeof(char *), (QSFUNC *)_rl_qsort_string_compare);
 
-	  si = strlen (text);
+      if (text)
+        si = strlen (text);
 	  if (si <= low)
 	    {
 	      for (i = 1; i <= matches; i++)

@@ -7755,7 +7755,7 @@ void usage()
 {
   print_version();
   puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
-  printf("Runs a test against the MariaDB server and compares output with a results file.\n\n");
+  printf("Runs a test against the OceanBase server and compares output with a results file.\n\n");
   printf("Usage: %s [OPTIONS] [database] < test_file\n", my_progname);
   print_defaults("my",load_default_groups);
   puts("");

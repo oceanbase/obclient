@@ -1016,7 +1016,8 @@ end4:
 no_conv:
   /* There was no number to convert.  */
   *error= MY_ERRNO_EDOM;
-  *endptr= (char *) nptr;
+  if (endptr)
+    *endptr= (char *) nptr;
   return 0;
 }
 
@@ -1162,9 +1163,12 @@ static size_t
 my_snprintf_mb2(CHARSET_INFO *cs __attribute__((unused)),
                 char* to, size_t n, const char* fmt, ...)
 {
+  size_t tmp = 0;
   va_list args;
   va_start(args,fmt);
-  return my_vsnprintf_mb2(to, n, fmt, args);
+  tmp = my_vsnprintf_mb2(to, n, fmt, args);
+  va_end(args);
+  return tmp;
 }
 
 
@@ -2391,9 +2395,12 @@ static size_t
 my_snprintf_utf32(CHARSET_INFO *cs __attribute__((unused)),
                   char* to, size_t n, const char* fmt, ...)
 {
+  size_t tmp = 0;
   va_list args;
   va_start(args,fmt);
-  return my_vsnprintf_utf32(to, n, fmt, args);
+  tmp = my_vsnprintf_utf32(to, n, fmt, args);
+  va_end(args);
+  return tmp;
 }
 
 
@@ -2562,7 +2569,8 @@ end4:
 no_conv:
   /* There was no number to convert.  */
   *error= MY_ERRNO_EDOM;
-  *endptr= (char *) nptr;
+  if (endptr)
+    *endptr= (char *) nptr;
   return 0;
 }
 

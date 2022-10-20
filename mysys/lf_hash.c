@@ -421,7 +421,7 @@ int lf_hash_insert(LF_HASH *hash, LF_PINS *pins, const void *data)
   }
   csize= hash->size;
   if ((my_atomic_add32(&hash->count, 1)+1.0) / csize > MAX_LOAD)
-    my_atomic_cas32(&hash->size, &csize, csize*2);
+    (void)my_atomic_cas32(&hash->size, &csize, csize*2);
   return 0;
 }
 
@@ -563,7 +563,7 @@ static int initialize_bucket(LF_HASH *hash, LF_SLIST * volatile *node,
     my_free(dummy);
     dummy= cur;
   }
-  my_atomic_casptr((void **)node, (void **)(char*) &tmp, dummy);
+  (void)my_atomic_casptr((void **)node, (void **)(char*) &tmp, dummy);
   /*
     note that if the CAS above failed (after l_insert() succeeded),
     it would mean that some other thread has executed l_insert() for

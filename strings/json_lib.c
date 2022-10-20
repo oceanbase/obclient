@@ -1187,7 +1187,7 @@ int json_path_setup(json_path_t *p,
     };
   } while (state != PS_OK);
 
-  return double_wildcard ? (p->s.error= JE_SYN) : 0;
+  return double_wildcard!= JSON_PATH_KEY_NULL ? (p->s.error= JE_SYN) : 0;
 }
 
 

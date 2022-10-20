@@ -17,14 +17,18 @@
 #ifndef _welcome_copyright_notice_h_
 #define _welcome_copyright_notice_h_
 
-#define COPYRIGHT_NOTICE_CURRENT_YEAR "2022"
+#define COPYRIGHT_NOTICE_CURRENT_YEAR "2018"
 
 /*
   This define specifies copyright notice which is displayed by every MySQL
   program on start, or on help screen.
 */
+#define ORACLE_WELCOME_COPYRIGHT_NOTICE(first_year) \
+  "Copyright (c) " first_year ", " COPYRIGHT_NOTICE_CURRENT_YEAR \
+   ", Oracle, MariaDB Corporation Ab and others.\n"
+
 #define OB_WELCOME_COPYRIGHT_NOTICE(first_year) \
   "Copyright (c) " first_year ", " COPYRIGHT_NOTICE_CURRENT_YEAR \
-   ", OceanBase and/or its affiliates. All rights reserved.\n"
+   ", OB Corporation Ab and others.\n"
 
 #endif /* _welcome_copyright_notice_h_ */

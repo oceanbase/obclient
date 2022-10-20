@@ -11,9 +11,13 @@
 #include <custom_conf.h>
 #else
 #define PROTOCOL_VERSION		10
-#define MYSQL_SERVER_VERSION		"10.4.18-MariaDB"
+#ifndef MYSQL_SERVER_VERSION
+#define MYSQL_SERVER_VERSION		"10.4.18"
+#endif
 #define MYSQL_BASE_VERSION		"mysqld-10.4"
+#ifndef MARIADB_BASE_VERSION
 #define MARIADB_BASE_VERSION		"mariadb-10.4"
+#endif
 #define MARIADBD_BASE_VERSION		"mariadbd-10.4"
 #define MYSQL_SERVER_SUFFIX_DEF		""
 #define FRM_VER				6

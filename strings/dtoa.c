@@ -2805,7 +2805,8 @@ trimzeros:
     s++;
   }
 ret:
-  Bfree(S, &alloc);
+  if (S)
+    Bfree(S, &alloc);
   if (mhi)
   {
     if (mlo && mlo != mhi)
@@ -2813,7 +2814,8 @@ ret:
     Bfree(mhi, &alloc);
   }
 ret1:
-  Bfree(b, &alloc);
+  if (b)
+    Bfree(b, &alloc);
   *s= 0;
   *decpt= k + 1;
   if (rve)

@@ -90,7 +90,7 @@ TODO:
 #include <sys/wait.h>
 #endif
 #include <ctype.h>
-#include <welcome_copyright_notice.h>   /* OB_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h>   /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 #ifdef __WIN__
 #define srandom  srand
@@ -715,7 +715,7 @@ static void print_version(void)
 static void usage(void)
 {
   print_version();
-  puts(OB_WELCOME_COPYRIGHT_NOTICE("2005"));
+  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2005"));
   puts("Run a query multiple times against the server.\n");
   printf("Usage: %s [OPTIONS]\n",my_progname);
   print_defaults("my",load_default_groups);

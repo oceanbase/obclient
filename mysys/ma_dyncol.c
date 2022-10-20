@@ -3827,6 +3827,8 @@ my_bool dynstr_append_json_quoted(DYNAMIC_STRING *str,
                     10);
   size_t lim= additional;
   size_t i;
+  if (str->alloc_increment == 0)
+    return TRUE;
   if (dynstr_realloc(str, len + additional + 2))
     return TRUE;
   str->str[str->length++]= '"';
@@ -4042,13 +4044,13 @@ mariadb_dyncol_val_long(longlong *ll, DYNAMIC_COLUMN_VALUE *val)
         (val->x.time_value.neg ? -1 : 1);
       break;
     case DYN_COL_DATE:
-      *ll= (val->x.time_value.year * 10000 +
+      *ll= (val->x.time_value.year * 10000LL +
             val->x.time_value.month * 100 +
             val->x.time_value.day) *
         (val->x.time_value.neg ? -1 : 1);
       break;
     case DYN_COL_TIME:
-      *ll= (val->x.time_value.hour * 10000 +
+      *ll= (val->x.time_value.hour * 10000LL +
             val->x.time_value.minute * 100 +
             val->x.time_value.second) *
         (val->x.time_value.neg ? -1 : 1);

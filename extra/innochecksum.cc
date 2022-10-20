@@ -37,7 +37,7 @@
 #endif
 #include <my_getopt.h>
 #include <m_string.h>
-#include <welcome_copyright_notice.h> /* OB_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 /* Only parts of these files are included from the InnoDB codebase.
 The parts not included are excluded by #ifndef UNIV_INNOCHECKSUM. */
@@ -1318,7 +1318,7 @@ static void print_version(void)
 static void usage(void)
 {
 	print_version();
-	puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
+	puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
 	printf("InnoDB offline file checksum utility.\n");
 	printf("Usage: %s [-c] [-s <start page>] [-e <end page>] "
 		"[-p <page>] [-i] [-v]  [-a <allow mismatches>] [-n] "

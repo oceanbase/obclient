@@ -55,7 +55,7 @@
 #include "mysql_version.h"
 #include "mysqld_error.h"
 
-#include <welcome_copyright_notice.h> /* OB_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 /* Exit codes */
 
@@ -675,7 +675,7 @@ static void short_usage_sub(FILE *f)
 static void usage(void)
 {
   print_version();
-  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   puts("Dumping structure and contents of MariaDB databases and tables.");
   short_usage_sub(stdout);
   print_defaults("my",load_default_groups);

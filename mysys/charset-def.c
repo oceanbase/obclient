@@ -244,6 +244,13 @@ my_bool init_compiled_charsets(myf flags __attribute__((unused)))
   add_compiled_collation(&my_charset_gbk_nopad_bin);
 #endif
 
+#ifdef HAVE_CHARSET_gb18030
+  add_compiled_collation(&my_charset_gb18030_chinese_ci);
+  add_compiled_collation(&my_charset_gb18030_bin);
+  add_compiled_collation(&my_charset_gb18030_chinese_nopad_ci);
+  add_compiled_collation(&my_charset_gb18030_nopad_bin);
+#endif /* HAVE_CHARSET_gb18030 */
+
 #ifdef HAVE_CHARSET_sjis
   add_compiled_collation(&my_charset_sjis_japanese_ci);
   add_compiled_collation(&my_charset_sjis_bin);

@@ -464,7 +464,7 @@ rl_redisplay ()
   const char *prompt_this_line;
 #if defined (HANDLE_MULTIBYTE)
   int num, n0= 0;
-  wchar_t wc;
+  wchar_t wc=0;
   size_t wc_bytes;
   int wc_width= 0;
   mbstate_t ps;
@@ -1091,7 +1091,7 @@ rl_redisplay ()
 	}
       else if (ndisp < _rl_screenwidth - 2)		/* XXX - was -1 */
 	lmargin = 0;
-      else if (phys_c_pos < 1)
+      else if (phys_c_pos < 1 && t != 0)
 	{
 	  /* If we are moving back towards the beginning of the line and
 	     the last margin is no longer correct, compute a new one. */

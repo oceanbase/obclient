@@ -134,8 +134,11 @@ static LIKELY_ENTRY *my_likely_find(const char *file_name, uint line)
   if (!(entry= (LIKELY_ENTRY*) my_hash_search(&likely_hash, (uchar*) key,
                                               length)))
   {
-    if (!(entry= (LIKELY_ENTRY *) malloc(sizeof(*entry) + length)))
+    if (!(entry= (LIKELY_ENTRY *) malloc(sizeof(*entry) + length))){
+      pthread_mutex_unlock(&likely_mutex);
       return 0;
+    }
+    
     entry->key= (char*) (entry+1);
     memcpy((void*) entry->key, key, length);
     entry->key_length= length;

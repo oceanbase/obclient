@@ -57,8 +57,10 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#ifndef _WIN32
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
+#endif
 #endif
 
 #ifdef SUPPORT_LIBZ
@@ -2074,10 +2076,13 @@ while (ptr < endptr)
     else
 #endif
 
-    bufflength = 2*bufthird +
-      (input_line_buffered?
-       read_one_line(main_buffer + 2*bufthird, bufthird, in) :
-       fread(main_buffer + 2*bufthird, 1, bufthird, in));
+    size_t tmp = 0;
+    if (input_line_buffered) {
+      tmp = read_one_line(main_buffer + 2 * bufthird, bufthird, in);
+    } else {
+      tmp = fread(main_buffer + 2 * bufthird, 1, bufthird, in);
+    }
+    bufflength = 2 * bufthird + tmp;
     endptr = main_buffer + bufflength;
 
     /* Adjust any last match point */
@@ -2880,7 +2885,7 @@ for (i = 1; i < argc; i++)
   is NO_DATA, it means that there is no data, and the option might set
   something in the PCRE options. */
 
-  if (op->type == OP_NODATA)
+  if (op && op->type == OP_NODATA)
     {
     pcre_options = handle_option(op->one_char, pcre_options);
     continue;
@@ -2891,7 +2896,7 @@ for (i = 1; i < argc; i++)
   separate item. At the moment, the only such options are "colo(u)r",
   "only-matching", and Jeffrey Friedl's special -S debugging option. */
 
-  if (*option_data == 0 &&
+  if (*option_data == 0 && op &&
       (op->type == OP_OP_STRING || op->type == OP_OP_NUMBER ||
        op->type == OP_OP_NUMBERS))
     {

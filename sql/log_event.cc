@@ -6761,7 +6761,7 @@ enum enum_binlog_checksum_alg get_checksum_alg(const char* buf, ulong len)
 Start_encryption_log_event::Start_encryption_log_event(
     const char* buf, uint event_len,
     const Format_description_log_event* description_event)
-  :Log_event(buf, description_event)
+  :Log_event(buf, description_event), key_version(0)
 {
   if ((int)event_len ==
       LOG_EVENT_MINIMAL_HEADER_LEN + Start_encryption_log_event::get_data_size())
@@ -7946,7 +7946,7 @@ bool Binlog_checkpoint_log_event::write()
 
 Gtid_log_event::Gtid_log_event(const char *buf, uint event_len,
                const Format_description_log_event *description_event)
-  : Log_event(buf, description_event), seq_no(0), commit_id(0)
+  : Log_event(buf, description_event), seq_no(0), commit_id(0), flags2(0)
 {
   uint8 header_size= description_event->common_header_len;
   uint8 post_header_len= description_event->post_header_len[GTID_EVENT-1];
@@ -8305,7 +8305,7 @@ err:
 
 Gtid_list_log_event::Gtid_list_log_event(const char *buf, uint event_len,
                const Format_description_log_event *description_event)
-  : Log_event(buf, description_event), count(0), list(0), sub_id_list(0)
+  : Log_event(buf, description_event), count(0), list(0), sub_id_list(0), gl_flags(0)
 {
   uint32 i;
   uint32 val;
@@ -9813,7 +9813,7 @@ bool Create_file_log_event::write_base()
 
 Create_file_log_event::Create_file_log_event(const char* buf, uint len,
                                              const Format_description_log_event* description_event)
-  :Load_log_event(buf,0,description_event),fake_base(0),block(0),inited_from_old(0)
+  :Load_log_event(buf,0,description_event),fake_base(0),block(0),inited_from_old(0),block_len(0), file_id(0)
 {
   DBUG_ENTER("Create_file_log_event::Create_file_log_event(char*,...)");
   uint block_offset;
@@ -10055,7 +10055,7 @@ Append_block_log_event::Append_block_log_event(THD *thd_arg,
 
 Append_block_log_event::Append_block_log_event(const char* buf, uint len,
                                                const Format_description_log_event* description_event)
-  :Log_event(buf, description_event),block(0)
+  :Log_event(buf, description_event),block(0),db(NULL)
 {
   DBUG_ENTER("Append_block_log_event::Append_block_log_event(char*,...)");
   uint8 common_header_len= description_event->common_header_len; 
@@ -10331,7 +10331,7 @@ Execute_load_log_event::Execute_load_log_event(THD *thd_arg,
 
 Execute_load_log_event::Execute_load_log_event(const char* buf, uint len,
                                                const Format_description_log_event* description_event)
-  :Log_event(buf, description_event), file_id(0)
+  :Log_event(buf, description_event), file_id(0), db(NULL)
 {
   uint8 common_header_len= description_event->common_header_len;
   uint8 exec_load_header_len= description_event->post_header_len[EXEC_LOAD_EVENT-1];
@@ -10557,7 +10557,7 @@ Execute_load_query_log_event::
 Execute_load_query_log_event(const char* buf, uint event_len,
                              const Format_description_log_event* desc_event):
   Query_log_event(buf, event_len, desc_event, EXECUTE_LOAD_QUERY_EVENT),
-  file_id(0), fn_pos_start(0), fn_pos_end(0)
+  file_id(0), fn_pos_start(0), fn_pos_end(0), dup_handling(LOAD_DUP_ERROR)
 {
   if (!Query_log_event::is_valid())
     return;
@@ -10900,7 +10900,7 @@ Rows_log_event::Rows_log_event(THD *thd_arg, TABLE *tbl_arg, ulong tid,
 Rows_log_event::Rows_log_event(const char *buf, uint event_len,
                                const Format_description_log_event
                                *description_event)
-  : Log_event(buf, description_event),
+  : Log_event(buf, description_event), m_vers_from_plain(false),
     m_row_count(0),
 #ifndef MYSQL_CLIENT
     m_table(NULL),
@@ -12842,7 +12842,7 @@ int Table_map_log_event::rewrite_db(const char* new_db, size_t new_len,
   if (!m_memory)
   {
     sql_print_error("Table_map_log_event::rewrite_db: "
-                    "failed to allocate new m_memory (%d + %d + %d bytes required)",
+                    "failed to allocate new m_memory (%d + %lu + %d bytes required)",
                     m_dblen + 1, m_tbllen + 1, m_colcnt);
     DBUG_RETURN(-1);
   }

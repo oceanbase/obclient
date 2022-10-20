@@ -384,7 +384,7 @@ if (rc == 0) rc = (int)nmatch;    /* All captured slots were filled in */
 if (rc >= 0)
   {
   size_t i;
-  if (!nosub)
+  if (!nosub && pmatch)
     {
     for (i = 0; i < (size_t)rc; i++)
       {
@@ -409,9 +409,9 @@ switch(rc)
   compile time, as the sizeof() operator does not work in the C preprocessor.
   As all the PCRE_ERROR_xxx values are negative, we can use 0 and 1. */
 
-  case 0:
-  case (sizeof(eint)/sizeof(int) == ERRCOUNT):
-  return REG_ASSERT;
+  //case 0:
+  //case (sizeof(eint)/sizeof(int) == ERRCOUNT):
+  //return REG_ASSERT;
 /* ========================================================================== */
 
   case PCRE_ERROR_NOMATCH: return REG_NOMATCH;

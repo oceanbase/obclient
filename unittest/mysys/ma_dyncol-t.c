@@ -134,12 +134,13 @@ err:
 void test_value_single_decimal(const char *num)
 {
   char *end= (((char*)num) + strlen(num));
-  char buff[80];
+  char buff[80] = {0};
   int rc= FALSE;
   int length= 80;
   uint ids[1]= {1};
   DYNAMIC_COLUMN_VALUE val, res;
   DYNAMIC_COLUMN str;
+  memset(&str, 0, sizeof(str));
 
   /* init values */
   mariadb_dyncol_prepare_decimal(&val); // special procedure for decimal!!!
@@ -375,6 +376,8 @@ void test_value_multi(ulonglong num0,
   uint i;
   DYNAMIC_COLUMN_VALUE val[9], res[9];
   DYNAMIC_COLUMN str;
+  
+  memset(&str, 0, sizeof(str));
   /* init values */
   val[0].type= DYN_COL_UINT;
   val[0].x.ulong_value= num0;
@@ -645,6 +648,12 @@ void test_update_many(uint *column_numbers, uint *column_values,
   DYNAMIC_COLUMN str1;
   DYNAMIC_COLUMN str2;
   DYNAMIC_COLUMN_VALUE *val, *upd, *res;
+  
+  memset(&str1, 0, sizeof(str1));
+  memset(&str2, 0, sizeof(str2));
+  val = NULL;
+  upd = NULL;
+  res = NULL;
 
   val= (DYNAMIC_COLUMN_VALUE *)malloc(sizeof(DYNAMIC_COLUMN_VALUE) *
                                       column_count);

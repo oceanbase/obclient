@@ -76,7 +76,7 @@ FILE *my_fopen(const char *filename, int flags, myf MyFlags)
     my_errno=errno;
   DBUG_PRINT("error",("Got error %d on open",my_errno));
   if (MyFlags & (MY_FFNF | MY_FAE | MY_WME))
-    my_error((flags & O_RDONLY) ? EE_FILENOTFOUND : EE_CANTCREATEFILE,
+    my_error(EE_CANTCREATEFILE,
 	     MYF(ME_BELL), filename, my_errno);
   DBUG_RETURN((FILE*) 0);
 } /* my_fopen */
@@ -288,8 +288,13 @@ static void make_ftype(register char * to, register int flag)
   else    
     *to++= 'r';
 
-  if (flag & FILE_BINARY)    
-    *to++='b';
+#ifdef _WIN32
+  if (flag & FILE_BINARY)
+    *to++ = 'b';
+#else 
+  if (flag == FILE_BINARY)
+    *to++ = 'b';
+#endif
 
   if (O_CLOEXEC)
     *to++= 'e';

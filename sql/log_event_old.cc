@@ -1129,7 +1129,7 @@ Old_rows_log_event::Old_rows_log_event(THD *thd_arg, TABLE *tbl_arg, ulong tid,
     m_table(tbl_arg),
     m_table_id(tid),
     m_width(tbl_arg ? tbl_arg->s->fields : 1),
-    m_rows_buf(0), m_rows_cur(0), m_rows_end(0), m_flags(0) 
+    m_rows_buf(0), m_rows_cur(0), m_rows_end(0), m_flags(0), m_master_reclength(0)
 #ifdef HAVE_REPLICATION
     , m_curr_row(NULL), m_curr_row_end(NULL), m_key(NULL)
 #endif

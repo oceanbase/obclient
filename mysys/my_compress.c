@@ -102,6 +102,7 @@ int my_compress_buffer(uchar *dest, size_t *destLen,
     z_stream stream;
     int err;
 
+    memset(&stream, 0, sizeof(stream));
     stream.next_in = (Bytef*)source;
     stream.avail_in = (uInt)sourceLen;
     stream.next_out = (Bytef*)dest;
@@ -112,6 +113,7 @@ int my_compress_buffer(uchar *dest, size_t *destLen,
     stream.zalloc = (alloc_func)my_az_allocator;
     stream.zfree = (free_func)my_az_free;
     stream.opaque = (voidpf)0;
+    stream.total_out = 0;
 
     err = deflateInit(&stream, Z_DEFAULT_COMPRESSION);
     if (err != Z_OK) return err;

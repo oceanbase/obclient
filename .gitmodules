@@ -1,3 +1,4 @@
 [submodule "libmariadb"]
 	path = libmariadb
 	url = https://github.com/oceanbase/obconnector-c
+	branch = master

@@ -1239,7 +1239,7 @@ double getopt_double_limit_value(double num, const struct my_option *optp,
 
   max= getopt_ulonglong2double(optp->max_value);
   min= getopt_ulonglong2double(optp->min_value);
-  if (max && num > max)
+  if (max > 0 && num > max)
   {
     num= max;
     adjusted= TRUE;

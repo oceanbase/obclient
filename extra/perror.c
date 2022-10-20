@@ -23,7 +23,7 @@
 #include <m_string.h>
 #include <errno.h>
 #include <my_getopt.h>
-#include <welcome_copyright_notice.h> /* OB_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 static my_bool verbose, print_all_codes;
 
@@ -86,7 +86,7 @@ static void print_version(void)
 static void usage(void)
 {
   print_version();
-  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("Print a description for a system error code or a MariaDB error code.\n");
   printf("If you want to get the error for a negative error code, you should use\n-- before the first error code to tell perror that there was no more options.\n\n");
   printf("Usage: %s [OPTIONS] [ERRORCODE [ERRORCODE...]]\n",my_progname);

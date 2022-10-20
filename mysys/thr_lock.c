@@ -470,8 +470,10 @@ void thr_lock_info_init(THR_LOCK_INFO *info, struct st_my_thread_var *tmp)
 {
   if (tmp)
     tmp= my_thread_var;
-  info->thread=    tmp->pthread_self;
-  info->thread_id= tmp->id;
+  if (tmp) {
+    info->thread=    tmp->pthread_self;
+    info->thread_id= tmp->id;
+  }
 }
 
 	/* Initialize a lock instance */
@@ -725,7 +727,8 @@ wsrep_break_lock(
     else
     {
       assert(wait_queue->data!=0);
-      wait_queue->data->prev=&data->next;
+      if(wait_queue->data)
+        wait_queue->data->prev=&data->next;
     }
     data->next=wait_queue->data;
     data->prev=&wait_queue->data;
@@ -970,7 +973,7 @@ thr_lock(THR_LOCK_DATA *data, THR_LOCK_INFO *owner, ulong lock_wait_timeout)
 	if (lock_type == TL_WRITE_CONCURRENT_INSERT)
         {
           concurrent_insert= 1;
-          if ((*lock->check_status)(data->status_param))
+          if (lock->check_status && (*lock->check_status)(data->status_param))
           {
             concurrent_insert= 0;
             data->type=lock_type= thr_upgraded_concurrent_insert_lock;

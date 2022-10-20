@@ -103,7 +103,12 @@ public:
   uint klen, buf_len;
   uchar oiv[MY_AES_BLOCK_SIZE];
 
-  MyCTX_nopad() : MyCTX() { }
+  MyCTX_nopad() : MyCTX() { 
+    key = NULL;
+    klen = 0;
+    buf_len = 0;
+    memset(oiv, 0, sizeof(oiv));
+  }
   ~MyCTX_nopad() { }
 
   int init(const EVP_CIPHER *cipher, int encrypt, const uchar *key, uint klen,
@@ -193,7 +198,10 @@ class MyCTX_gcm : public MyCTX
 public:
   const uchar *aad;
   int aadlen;
-  MyCTX_gcm() : MyCTX() { }
+  MyCTX_gcm() : MyCTX() {
+    aad = NULL;
+    aadlen = 0;
+  }
   ~MyCTX_gcm() { }
 
   int init(const EVP_CIPHER *cipher, int encrypt, const uchar *key, uint klen,

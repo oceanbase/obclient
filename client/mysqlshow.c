@@ -28,7 +28,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <sslopt-vars.h>
-#include <welcome_copyright_notice.h>   /* OB_WELCOME_COPYRIGHT_NOTICE */
+#include <welcome_copyright_notice.h>   /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 static char * host=0, *opt_password=0, *user=0;
 static my_bool opt_show_keys= 0, opt_compress= 0, opt_count=0, opt_status= 0;
@@ -271,7 +271,7 @@ static void print_version(void)
 static void usage(void)
 {
   print_version();
-  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   puts("Shows the structure of a MariaDB database (databases, tables, and columns).\n");
   printf("Usage: %s [OPTIONS] [database [table [column]]]\n",my_progname);
   puts("\n\

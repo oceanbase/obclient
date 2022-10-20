@@ -207,10 +207,10 @@ rl_gather_tyi ()
     {
       tem = fcntl (tty, F_GETFL, 0);
 
-      fcntl (tty, F_SETFL, (tem | O_NDELAY));
+      (void)fcntl (tty, F_SETFL, (tem | O_NDELAY));
       chars_avail = read (tty, &input, 1);
 
-      fcntl (tty, F_SETFL, tem);
+      (void)fcntl (tty, F_SETFL, tem);
       if (chars_avail == -1 && errno == EAGAIN)
 	return 0;
       if (chars_avail == 0)	/* EOF */

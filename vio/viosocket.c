@@ -124,7 +124,7 @@ int vio_socket_io_wait(Vio *vio, enum enum_vio_io_event event)
   case  0:
     /* The wait timed out. */
     ret= -1;
-    vio_set_linger(vio->mysql_socket.fd, 0);
+    (void)vio_set_linger(vio->mysql_socket.fd, 0);
     break;
   default:
     /* A positive value indicates an I/O event. */

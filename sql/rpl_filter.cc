@@ -594,9 +594,10 @@ void free_table_ent(void* a)
 void 
 Rpl_filter::init_table_rule_hash(HASH* h, bool* h_inited)
 {
-  my_hash_init(h, system_charset_info,TABLE_RULE_HASH_SIZE,0,0,
-	    get_table_key, free_table_ent, 0);
-  *h_inited = 1;
+  if (!my_hash_init(h, system_charset_info,TABLE_RULE_HASH_SIZE,0,0,
+	    get_table_key, free_table_ent, 0)) {
+    *h_inited = 1;
+  }
 }
 
 

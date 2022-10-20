@@ -339,6 +339,7 @@ for(;;)
   const char *flag = "  ";
   pcre_uint32 c;
   unsigned int extra = 0;
+  BOOL invertmap = FALSE;
 
   if (print_lengths)
     fprintf(f, "%3d ", (int)(code - codestart));
@@ -644,7 +645,6 @@ for(;;)
       int i;
       unsigned int min, max;
       BOOL printmap;
-      BOOL invertmap = FALSE;
       pcre_uint8 *map;
       pcre_uint8 inverted_map[32];
 

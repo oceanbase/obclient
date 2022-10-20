@@ -162,6 +162,7 @@ my_bool dynstr_append_cstring(DYNAMIC_STRING *str, const char *fmt, ...)
     str->length += ret;
   }
   else if (ret < 0) {
+    va_end(args);
     return TRUE;
   }
   else {
@@ -170,13 +171,16 @@ my_bool dynstr_append_cstring(DYNAMIC_STRING *str, const char *fmt, ...)
       str->alloc_increment;
     new_length *= str->alloc_increment;
     if (!(new_ptr = (char*)my_realloc(
-      str->str, new_length, MYF(MY_WME))))
-      return TRUE;
+      str->str, new_length, MYF(MY_WME)))) {
+        va_end(args);
+        return TRUE;
+    }
     str->str = new_ptr;
     str->max_length = new_length;
 
     if (!(0 < (ret = vsnprintf(str->str + str->length, str->max_length - str->length, fmt, args))
       && ret < str->max_length - str->length)) {
+      va_end(args);
       return TRUE;
     }
     str->length += ret;
@@ -250,6 +254,8 @@ my_bool dynstr_append_quoted(DYNAMIC_STRING *str,
   size_t additional= (str->alloc_increment ? str->alloc_increment : 10);
   size_t lim= additional;
   size_t i;
+  if (str->alloc_increment == 0)
+    return TRUE;
   if (dynstr_realloc(str, len + additional + 2))
     return TRUE;
   str->str[str->length++]= quote;

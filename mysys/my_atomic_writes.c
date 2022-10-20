@@ -111,7 +111,7 @@ static my_bool test_if_shannon_card_exists()
   {
     char path[32];
     struct stat stat_buff;
-
+    memset(&stat_buff, 0, sizeof(stat_buff));
     sprintf(path, "/dev/df%c", dev_part);
 #ifdef TEST_SHANNON
     if (lstat(path, &stat_buff) < 0)

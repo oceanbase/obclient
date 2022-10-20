@@ -475,6 +475,7 @@
 #define HAVE_CHARSET_euckr 1
 #define HAVE_CHARSET_gb2312 1
 #define HAVE_CHARSET_gbk 1
+#define HAVE_CHARSET_gb18030 1
 #define HAVE_CHARSET_geostd8 1
 #define HAVE_CHARSET_greek 1
 #define HAVE_CHARSET_hebrew 1
