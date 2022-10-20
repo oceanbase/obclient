@@ -18,6 +18,9 @@
 
 #define PROBES_MYSQL_H
 
+// FORCE TO DISABLE DTRACE
+#define DISABLE_DTRACE
+
 #if defined(HAVE_DTRACE) && !defined(DISABLE_DTRACE)
 #include "probes_mysql_dtrace.h"
 #else  /* no dtrace */

@@ -3,22 +3,23 @@
 # Usage: obclient-build.sh <oceanbasepath> <package> <version> <release>
 # Usage: obclient-build.sh
 
-REDHAT=`cat /etc/redhat-release|cut -d " " -f 7|cut -d "." -f 1`
-if [ $# -ne 4 ]
-then
-  TOP_DIR=`pwd`/../
-  PACKAGE=$(basename $0 -build.sh)
-  VERSION=`cat ${PACKAGE}-VER.txt`
-  RELEASE="dev.el${REDHAT}"
-else
-  TOP_DIR=$1
-  PACKAGE=$2
-  VERSION=$3
-  RELEASE="$4.el${REDHAT}"
-  export AONE_BUILD_NUMBER=${4}
-fi
+SCRIPT_DIR=$(cd "$(dirname "$0")";pwd)
+TOP_DIR=${1:-${SCRIPT_DIR}/../}
+DEP_DIR=${TOP_DIR}/deps/3rd/
+PACKAGE=${2:-$(basename $0 -build.sh)}
+VERSION=${3:-`cat ${PACKAGE}-VER.txt`}
+RELEASE=${4:-1}
 
 echo "[BUILD] args: TOP_DIR=${TOP_DIR} PACKAGE=${PACKAGE} VERSION=${VERSION} RELEASE=${RELEASE}"
+
+# dep_create
+cd $DEP_DIR
+bash dep_create.sh
+if [[ $? -ne 0 ]]; then
+    echo "dep create failed"
+    exit 1
+fi
+cd $SCRIPT_DIR
 
 TMP_DIR=${TOP_DIR}/${PACKAGE}-tmp.$$
 BOOST_DIR=${TMP_DIR}/BOOST
@@ -31,6 +32,7 @@ mkdir -p ${TMP_DIR}/SOURCES
 mkdir -p ${TMP_DIR}/SRPMS
 mkdir -p $BOOST_DIR
 
+#cp ./boost_1_59_0.tar.gz $BOOST_DIR
 SPEC_FILE=${PACKAGE}.spec
 
 echo "[BUILD] make rpms...dep_dir=$DEP_DIR spec_file=${SPEC_FILE}"
