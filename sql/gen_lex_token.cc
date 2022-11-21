@@ -339,7 +339,7 @@ void print_tokens()
 int main(int argc,char **argv)
 {
   puts("/*");
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2011"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2011"));
   puts("*/");
 
   printf("/*\n");

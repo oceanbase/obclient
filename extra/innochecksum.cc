@@ -1318,7 +1318,7 @@ static void print_version(void)
 static void usage(void)
 {
 	print_version();
-	puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+	puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
 	printf("InnoDB offline file checksum utility.\n");
 	printf("Usage: %s [-c] [-s <start page>] [-e <end page>] "
 		"[-p <page>] [-i] [-v]  [-a <allow mismatches>] [-n] "

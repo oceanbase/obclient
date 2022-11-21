@@ -257,7 +257,7 @@ static void usage(void)
 {
   DBUG_ENTER("usage");
   print_version();
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
   puts("This program can be used to CHECK (-c, -m, -C), REPAIR (-r), ANALYZE (-a),");
   puts("or OPTIMIZE (-o) tables. Some of the options (like -e or -q) can be");
   puts("used at the same time. Not all options are supported by all storage engines.");

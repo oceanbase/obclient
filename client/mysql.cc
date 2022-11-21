@@ -187,7 +187,7 @@ static char *pl_last_object = 0, *pl_last_type = 0, *pl_last_schema = 0;
 static char *pl_type = 0, *pl_object = 0, *pl_schema = 0;
 static uint pl_type_len = 0, pl_object_len = 0, pl_schema_len = 0;
 static uint obclient_num_width = 0;
-static bool force_set_num_width_close = 0; //default support as oracle
+static bool force_set_num_width_close = 1; //default support as oracle
 
 
 static MYSQL mysql;			/* The connection */
@@ -250,6 +250,11 @@ static char delimiter[16]= DEFAULT_DELIMITER;
 static uint delimiter_length= 1;
 static my_bool is_user_specify_delimiter = FALSE;
 unsigned short terminal_width= 80;
+
+#ifndef PROXY_MODE
+#define PROXY_MODE 0xfe
+#endif
+static my_bool is_proxymode = 0;
 
 static uint opt_protocol=0;
 static const char *opt_protocol_type= "";
@@ -1300,7 +1305,7 @@ void init_pl_sql(void)
 
   const char *pl_escape_sql_re_str =
     "^("
-    "[[:space:]]*(BEGIN|DECLARE)[[:space:]]+[[:alnum:]_]+[[:space:]]*|"
+    "[[:space:]]*(BEGIN|DECLARE)[[:space:]]*|"
     "[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?"
     "(PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?)[[:space:]]+"
     ")";
@@ -1469,7 +1474,7 @@ int main(int argc,char *argv[])
              INFO_INFO);
     my_snprintf((char*) glob_buffer.ptr(), glob_buffer.alloced_length(),
             "Your OceanBase connection id is %lu\nServer version: %s\n",
-            mysql_thread_id(&mysql), server_version_string(&mysql));
+            mysql_thread_id(&mysql), is_proxymode ? "":server_version_string(&mysql));
     put_info((char*) glob_buffer.ptr(),INFO_INFO);
     put_info(OB_WELCOME_COPYRIGHT_NOTICE("2000"), INFO_INFO);
   }
@@ -1623,6 +1628,9 @@ static bool do_connect(MYSQL *mysql, const char *host, const char *user,
   mysql_options(mysql, MYSQL_OPT_CONNECT_ATTR_RESET, 0);
   mysql_options4(mysql, MYSQL_OPT_CONNECT_ATTR_ADD,
                  "program_name", "mysql");
+  if(is_proxymode) {
+    mysql->ob_server_version = PROXY_MODE;
+  }
   return mysql_real_connect(mysql, host, user, password, database,
                             opt_mysql_port, opt_mysql_unix_port, flags);
 }
@@ -1939,6 +1947,8 @@ static struct my_option my_long_options[] =
    "password sandbox mode even if --batch was specified.",
    &opt_connect_expired_password, &opt_connect_expired_password, 0, GET_BOOL,
    NO_ARG, 0, 0, 0, 0, 0, 0},
+  { "proxy-mode", OPT_PROXY_MODE, "Proxy mode is not support getObServerVersion.",
+   &is_proxymode, &is_proxymode, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -4666,7 +4676,7 @@ print_table_data(MYSQL_RES *result)
       size_t visible_length= charset_info->cset->numcells(charset_info, buffer, buffer + data_length);
       extra_padding= (uint) (data_length - visible_length);
 
-      if ((!force_set_num_width_close) && mysql.oracle_mode && IS_NUM_TERMINAL(field->type) && IS_NUM_BINARY_TERMINAL(field->type)) {
+      if ((!force_set_num_width_close) && mysql.oracle_mode && cur[off] && IS_NUM_TERMINAL(field->type) && IS_NUM_BINARY_TERMINAL(field->type)) {
         /* 1.23456E+008 */
         format_fix_width_num_binary(cur[off], lengths[off]);
         if (num_flag[off] != 0) /* if it is numeric, we right-justify it */
@@ -4674,7 +4684,7 @@ print_table_data(MYSQL_RES *result)
         else 
           tee_print_sized_data(obclient_num_array, strlen(obclient_num_array), field_max_length, FALSE);
       }
-      else if ((!force_set_num_width_close) && mysql.oracle_mode && IS_NUM_TERMINAL(field->type)) {
+      else if ((!force_set_num_width_close) && mysql.oracle_mode && cur[off] && IS_NUM_TERMINAL(field->type)) {
         /* 123456.6754321 */
         format_fix_width_num(cur[off], lengths[off]);
         //if (num_flag[off] != 0) /* if it is numeric, we right-justify it */
@@ -4828,7 +4838,7 @@ print_table_data_html(MYSQL_RES *result)
     {
       (void) tee_fputs("<TD>", PAGER);
       if (mysql.oracle_mode && is_binary_field_oracle(&field[i])) {
-        if ((!force_set_num_width_close) && IS_NUM_BINARY_TERMINAL(field->type)) {
+        if ((!force_set_num_width_close) && cur[i] && IS_NUM_BINARY_TERMINAL(field->type)) {
           format_fix_width_num_binary(cur[i], lengths[i]); 
           print_as_hex_oracle(PAGER, obclient_num_array, strlen(obclient_num_array), lengths[i]);
         } else {
@@ -4838,7 +4848,7 @@ print_table_data_html(MYSQL_RES *result)
       else if (opt_binhex && is_binary_field(&field[i]))
         print_as_hex(PAGER, cur[i], lengths[i], lengths[i]);
       else {
-        if ((!force_set_num_width_close) && mysql.oracle_mode && IS_NUM_TERMINAL(field->type)) {
+        if ((!force_set_num_width_close) && mysql.oracle_mode && cur[i] && IS_NUM_TERMINAL(field->type)) {
           format_fix_width_num(cur[i], lengths[i]);
           xmlencode_print(obclient_num_array, strlen(obclient_num_array));
         } else {
@@ -4881,7 +4891,7 @@ print_table_data_xml(MYSQL_RES *result)
       {
         tee_fprintf(PAGER, "\">");
         if (mysql.oracle_mode && is_binary_field_oracle(&fields[i])) {
-          if ((!force_set_num_width_close) && IS_NUM_BINARY_TERMINAL(fields[i].type)) {
+          if ((!force_set_num_width_close) && cur[i] && IS_NUM_BINARY_TERMINAL(fields[i].type)) {
             format_fix_width_num_binary(cur[i], lengths[i]);
             print_as_hex_oracle(PAGER, obclient_num_array, strlen(obclient_num_array), lengths[i]);
           } else {
@@ -4891,7 +4901,7 @@ print_table_data_xml(MYSQL_RES *result)
         else if (opt_binhex && is_binary_field(&fields[i]))
           print_as_hex(PAGER, cur[i], lengths[i], lengths[i]);
         else {
-          if ((!force_set_num_width_close) && mysql.oracle_mode && IS_NUM_TERMINAL(fields[i].type)) {
+          if ((!force_set_num_width_close) && mysql.oracle_mode && cur[i] && IS_NUM_TERMINAL(fields[i].type)) {
             format_fix_width_num(cur[i], lengths[i]);
             xmlencode_print(obclient_num_array, strlen(obclient_num_array));
           } else {
@@ -4951,11 +4961,11 @@ print_table_data_vertically(MYSQL_RES *result)
         if (opt_binhex && is_binary_field(field) && !mysql.oracle_mode)
            fprintf(PAGER, "0x");
 
-        if ((!force_set_num_width_close) && mysql.oracle_mode && IS_NUM_BINARY_TERMINAL(field->type)) {
+        if ((!force_set_num_width_close) && mysql.oracle_mode && cur[off] && IS_NUM_BINARY_TERMINAL(field->type)) {
           format_fix_width_num_binary(cur[off], lengths[off]);
           p = obclient_num_array;
           len = strlen(obclient_num_array);
-        } else if ((!force_set_num_width_close) && mysql.oracle_mode && IS_NUM_TERMINAL(field->type)) {
+        } else if ((!force_set_num_width_close) && mysql.oracle_mode && cur[off] && IS_NUM_TERMINAL(field->type)) {
           format_fix_width_num(cur[off], lengths[off]);
           p = obclient_num_array;
           len = strlen(obclient_num_array);
@@ -6036,7 +6046,7 @@ com_status(String *buffer __attribute__((unused)),
 #endif
   tee_fprintf(stdout, "Using delimiter:\t%s\n", delimiter);
   //tee_fprintf(stdout, "Server:\t\t\t%s\n", mysql_get_server_name(&mysql));
-  tee_fprintf(stdout, "Server version:\t\t%s\n", server_version_string(&mysql));
+  tee_fprintf(stdout, "Server version:\t\t%s\n", is_proxymode ? "":server_version_string(&mysql));
   tee_fprintf(stdout, "Protocol version:\t%d\n", mysql_get_proto_info(&mysql));
   tee_fprintf(stdout, "Connection:\t\t%s\n", mysql_get_host_info(&mysql));
   if ((id= mysql_insert_id(&mysql)))

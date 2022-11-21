@@ -1894,9 +1894,9 @@ static void print_version()
 static void usage()
 {
   print_version();
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("\
-Dumps a MariaDB binary log in a format usable for viewing or for piping to\n\
+Dumps a OceanBase binary log in a format usable for viewing or for piping to\n\
 the mysql command line client.\n\n");
   printf("Usage: %s [options] log-files\n", my_progname);
   print_defaults("my",load_groups);

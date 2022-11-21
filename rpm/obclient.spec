@@ -6,7 +6,6 @@ Group: applications/database
 buildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 Autoreq: no
 Prefix: /u01/obclient
-Requires: libobclient >= 2.0.0
 Summary: Oracle 5.6 and some patches from Oceanbase
 
 %description

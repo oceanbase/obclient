@@ -179,6 +179,7 @@ FILE *stderror_file=0;
 
 static uint opt_protocol= 0;
 static char *opt_plugin_dir= 0, *opt_default_auth= 0;
+static char *opt_init_sql = NULL;
 
 /*
 Dynamic_string wrapper functions. In this file use these
@@ -270,6 +271,9 @@ static struct my_option my_long_options[] =
   {"comments", 'i', "Write additional information.",
    &opt_comments, &opt_comments, 0, GET_BOOL, NO_ARG,
    1, 0, 0, 0, 0, 0},
+  {"init-sql", OPT_INIT_SQL,
+    "Execute sqls on connection, used to customize timeout and other session variables.",
+    (uchar**)&opt_init_sql, (uchar**)&opt_init_sql, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"compatible", OPT_COMPATIBLE,
    "Change the dump to be compatible with a given mode. By default tables "
    "are dumped in a format optimized for MariaDB. Legal modes are: ansi, "
@@ -657,8 +661,8 @@ void check_io(FILE *file)
 
 static void print_version(void)
 {
-  printf("%s  Ver %s Distrib %s, for %s (%s)\n",my_progname_short,DUMP_VERSION,
-         MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
+  printf("%s  Ver %s Distrib %s, for %s (%s), OceanBase Customized Edition\n",
+    my_progname_short,DUMP_VERSION,MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
 } /* print_version */
 
 
@@ -675,8 +679,8 @@ static void short_usage_sub(FILE *f)
 static void usage(void)
 {
   print_version();
-  puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
-  puts("Dumping structure and contents of MariaDB databases and tables.");
+  puts(OB_WELCOME_COPYRIGHT_NOTICE("2000"));
+  puts("Dumping structure and contents of OceanBase databases and tables.");
   short_usage_sub(stdout);
   print_defaults("my",load_default_groups);
   puts("");
@@ -958,6 +962,11 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
     }
     if (my_hash_insert(&ignore_table, (uchar*)my_strdup(argument, MYF(0))))
       exit(EX_EOM);
+    break;
+  }
+  case (int)OPT_INIT_SQL:
+  {
+    opt_init_sql = argument;
     break;
   }
   case (int) OPT_COMPATIBLE:
@@ -4089,6 +4098,13 @@ static void dump_table(const char *table, const char *db, const uchar *hash_key,
       uint i;
       ulong *lengths= mysql_fetch_lengths(res);
       rownr++;
+
+      // For large tables
+      if (0 == rownr % 100000) {
+        fprintf(stderr, "%lu rows dumpped for %s\n",
+          rownr, result_table);
+      }
+
       if (!extended_insert && !opt_xml)
       {
         fputs(insert_pat.str,md_result_file);
@@ -4121,6 +4137,8 @@ static void dump_table(const char *table, const char *db, const uchar *hash_key,
                   (field->type == MYSQL_TYPE_BIT ||
                    field->type == MYSQL_TYPE_STRING ||
                    field->type == MYSQL_TYPE_VAR_STRING ||
+                   field->type == MYSQL_TYPE_OB_NVARCHAR2 ||
+                   field->type == MYSQL_TYPE_OB_NCHAR ||
                    field->type == MYSQL_TYPE_VARCHAR ||
                    field->type == MYSQL_TYPE_BLOB ||
                    field->type == MYSQL_TYPE_LONG_BLOB ||
@@ -6139,6 +6157,28 @@ static int purge_bin_logs_to(MYSQL *mysql_con, char* log_name)
   return err;
 }
 
+/*
+ Must terminate with  Example:
+ --init-sql="SET @@session.ob_query_timeout=86400000000;SET @@session.ob_trx_timeout=86400000000;"
+ */
+static int run_init_sql(MYSQL *mysql_con)
+{
+  char *sql = opt_init_sql;
+  while (1) {
+    char *end = strchr(sql, ';');
+    if (NULL == end) break;
+    *end = '\0';
+    if (mysql_query_with_error_report(mysql_con, 0, sql)) {
+      goto err;
+    }
+    // check if more stmt
+    sql = end + 1;
+  }
+  return 0;
+err:
+  return 1;
+}
+
 
 static int start_transaction(MYSQL *mysql_con)
 {
@@ -6267,13 +6307,51 @@ static void print_value(FILE *file, MYSQL_RES  *result, MYSQL_ROW row,
     char (bit value)            See IGNORE_ values at top
 */
 
+void get_engine_type(const char *table_name, char *engine_type)
+{
+  char buff[FN_REFLEN + 80], show_name_buff[FN_REFLEN];
+  MYSQL_RES *res = NULL;
+  MYSQL_ROW row;
+
+  /* Check memory for quote_for_like() */
+  DBUG_ASSERT(2 * sizeof(table_name) < sizeof(show_name_buff));
+  my_snprintf(buff, sizeof(buff), "show table status like %s",
+    quote_for_like(table_name, show_name_buff));
+  if (mysql_query_with_error_report(mysql, &res, buff))
+  {
+    if (mysql_errno(mysql) != ER_PARSE_ERROR)
+    {                                   /* If old MySQL version */
+      verbose_msg("-- Warning:(engine) Couldn't get status information for "
+        "table %s (%s)\n", table_name, mysql_error(mysql));
+      return;
+    }
+  }
+  if (!(row = mysql_fetch_row(res)))
+  {
+    fprintf(stderr,
+      "Error: (engine) Couldn't read status information for table %s (%s)\n",
+      table_name, mysql_error(mysql));
+    mysql_free_result(res);
+    return;
+  }
+  if (row[1])
+    strmake(engine_type, row[1], NAME_LEN - 1);
+  mysql_free_result(res);
+  return;
+}
+
 char check_if_ignore_table(const char *table_name, char *table_type)
 {
   char result= IGNORE_NONE;
   char buff[FN_REFLEN+80], show_name_buff[FN_REFLEN];
+  char engine_type[NAME_LEN] = { 0 };
   MYSQL_RES *res= NULL;
   MYSQL_ROW row;
   DBUG_ENTER("check_if_ignore_table");
+
+  /*SELECT engine, table_type FROM INFORMATION_SCHEMA.TABLES, 
+  because engine is NULL, so get by ->show table status liek 'test';*/
+  get_engine_type(table_name, engine_type);
 
   /* Check memory for quote_for_like() */
   DBUG_ASSERT(2*sizeof(table_name) < sizeof(show_name_buff));
@@ -6298,7 +6376,7 @@ char check_if_ignore_table(const char *table_name, char *table_type)
     mysql_free_result(res);
     DBUG_RETURN(result);                         /* assume table is ok */
   }
-  if (!(row[0]))
+  if (strlen(engine_type)==0)
     strmake(table_type, "VIEW", NAME_LEN-1);
   else
   {
@@ -6308,7 +6386,7 @@ char check_if_ignore_table(const char *table_name, char *table_type)
       these types, but we do want to use delayed inserts in the dump if
       the table type is _NOT_ one of these types
     */
-    strmake(table_type, row[0], NAME_LEN-1);
+    strmake(table_type, engine_type, NAME_LEN-1);
     if (opt_delayed)
     {
       if (strcmp(table_type,"MyISAM") &&
@@ -6333,7 +6411,6 @@ char check_if_ignore_table(const char *table_name, char *table_type)
   mysql_free_result(res);
   DBUG_RETURN(result);
 }
-
 
 /*
   Get string of comma-separated primary key field names
@@ -6797,6 +6874,9 @@ int main(int argc, char **argv)
     if (get_bin_log_name(mysql, bin_log_name, sizeof(bin_log_name)))
       goto err;
   }
+
+  if (opt_init_sql && run_init_sql(mysql))
+    goto err;
 
   if (opt_single_transaction && start_transaction(mysql))
     goto err;

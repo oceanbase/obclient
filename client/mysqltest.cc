@@ -113,11 +113,21 @@ enum {
   OPT_EXPLAIN_AS_PX, OPT_EXPLAIN_AS_NO_PX
 };
 
+const char* HINT_SQL_COMMANDS[] = { "SELECT ", "UPDATE ", "INSERT ", "DELETE ", "MERGE ",
+                                    "select ", "update ", "insert ", "delete ", "merge " };
+struct hint_info {
+  uint start = 0;
+  uint length = 0;
+  uint end = 0;
+};
+struct hint_info opt_sp_hint_info;
+
 static int record= 0, opt_sleep= -1;
 static char *opt_db= 0, *opt_pass= 0;
 const char *opt_user= 0, *opt_host= 0, *unix_sock= 0, *opt_basedir= "./";
 const char *opt_logdir= "";
 const char *opt_prologue= 0, *opt_charsets_dir;
+const char *opt_sp_hint = 0;
 static int opt_port= 0;
 static int opt_max_connect_retries;
 static int opt_result_format_version;
@@ -132,10 +142,12 @@ static my_bool ps_protocol= 0, ps_protocol_enabled= 0;
 static my_bool sp_protocol= 0, sp_protocol_enabled= 0;
 static my_bool view_protocol= 0, view_protocol_enabled= 0;
 static my_bool disable_explain = 0;
+static my_bool opt_no_warning = 0;
 static my_bool explain_protocol = 0, explain_protocol_enabled = 0;
 static my_bool json_explain_protocol = 0, json_explain_protocol_enabled = 0;
 static my_bool cursor_protocol= 0, cursor_protocol_enabled= 0;
 static my_bool parsing_disabled= 0;
+static my_bool opt_sort_result = 0;
 static my_bool display_result_vertically= FALSE, display_result_lower= FALSE,
   display_metadata= FALSE, display_result_sorted= FALSE,
   display_session_track_info= FALSE;
@@ -259,6 +271,8 @@ static const char *embedded_server_groups[]=
 
 static int embedded_server_arg_count=0;
 static char *embedded_server_args[MAX_EMBEDDED_SERVER_ARGS];
+
+static const char* default_charset = MYSQL_DEFAULT_CHARSET_NAME;
 
 /*
   Timer related variables
@@ -1092,9 +1106,20 @@ print_table_data(DYNAMIC_STRING *ds,
       size_t numcells= charset_info->cset->numcells(charset_info,
                                                     field->name,
                                                     field->name + name_length);
-      size_t display_length= field->max_length + name_length - numcells;
+      int display_length= min<int>((int)(field->max_length + name_length - numcells), MAX_COLUMN_LENGTH);
+      if (ds->max_length - ds->length < display_length) {
+          char* new_ptr;
+          size_t new_length = (ds->length + display_length + ds->alloc_increment) /
+              ds->alloc_increment;
+          new_length *= ds->alloc_increment;
+          if (new_ptr = (char*)my_realloc(ds->str, new_length, MYF(MY_WME)))
+          {
+              ds->str = new_ptr;
+              ds->max_length = new_length;
+          }
+      }
       dynstr_append_cstring(ds, " %-*s |",
-                            min<int>((int) display_length, MAX_COLUMN_LENGTH),
+                            display_length,
                             field->name);
       num_flag[off]= IS_NUM(field->type);
     }
@@ -6645,6 +6670,9 @@ void do_connect(struct st_command *command)
 #endif
   if (opt_compress || con_compress)
     mysql_options(con_slot->mysql, MYSQL_OPT_COMPRESS, NullS);
+  if (0 != strcmp(default_charset, charset_info->csname) &&
+      !(charset_info = get_charset_by_csname(default_charset, MY_CS_PRIMARY, MYF(MY_WME))))
+      die("Invalid character set specified.");
   mysql_options(con_slot->mysql, MYSQL_SET_CHARSET_NAME,
                 csname?csname: charset_info->csname);
   if (opt_charsets_dir)
@@ -7418,6 +7446,95 @@ void convert_to_format_v1(char* query)
   }
 }
 
+char* strninsert(char* src, const char* word, int pos) {
+  int src_len = strlen(src);
+  if (src_len < pos) {
+    pos = src_len;
+  }
+  int w_len = strlen(word);
+  char* p = src;
+  char* end = p + src_len + w_len;
+  p = p + pos + w_len;
+  for (; end >= p; end--) {
+    *end = *(end - w_len);
+  }
+  p -= w_len;
+  for (; end >= p;) {
+    *p++ = *word++;
+  }
+  return src;
+}
+
+uint match_sp_hint(char* query) {
+    if (!opt_sp_hint) return 0;
+    uint query_len = strlen(query);
+    uint cmd_len = 0;
+    for (uint i = 0; i < (sizeof(HINT_SQL_COMMANDS) / sizeof(HINT_SQL_COMMANDS[0])); i++) {
+        cmd_len = strlen(HINT_SQL_COMMANDS[i]);
+        if (query_len > cmd_len && 0 == strncmp(query, HINT_SQL_COMMANDS[i], cmd_len))
+            return cmd_len;
+    }
+    return 0;
+}
+
+void query_add_sp_hint(char* query, uint matched_pos) {
+    char* p = query;
+    char* start = query;
+    p += matched_pos;
+    while (*p && my_isspace(charset_info, *p))
+        p++;
+    char* temp = p;
+    if (*temp && *temp++ == '/' && *temp++ == '*' && *temp == '+') {
+        while (1) {
+            if (!(*temp)) {
+                opt_sp_hint_info.start = 0;
+                opt_sp_hint_info.length = 0;
+                opt_sp_hint_info.end = 0;
+                return;
+            }
+            else {
+                if (*temp++ == '*' && *temp == '/') {
+                    p = --temp;
+                    break;
+                }
+            }
+        }
+        opt_sp_hint_info.start = p - start;
+        opt_sp_hint_info.length = strlen(opt_sp_hint) + 1;
+        opt_sp_hint_info.end = strlen(query) + opt_sp_hint_info.length;
+        char* hint_str = (char*)my_malloc(opt_sp_hint_info.length + 1, MYF(MY_WME | MY_FAE));
+        strcpy(hint_str, " ");
+        strcat(hint_str, opt_sp_hint);
+        strninsert(query, hint_str, opt_sp_hint_info.start);
+    }
+    else {
+        opt_sp_hint_info.start = p - start;
+        opt_sp_hint_info.length = strlen(opt_sp_hint) + 8;
+        opt_sp_hint_info.end = strlen(query) + opt_sp_hint_info.length;
+        char* hint_str = (char*)my_malloc(opt_sp_hint_info.length + 1, MYF(MY_WME | MY_FAE));
+        strcpy(hint_str, "/*+ ");
+        strcat(hint_str, opt_sp_hint);
+        strcat(hint_str, " */ ");
+        strninsert(query, hint_str, p - start);
+    }
+}
+char* query_without_sp_hint(char* query) {
+    int start = strlen(query) - opt_sp_hint_info.end + opt_sp_hint_info.start;
+    int length = opt_sp_hint_info.length;
+    int new_len = strlen(query) - length;
+    char* new_query = (char*)my_malloc(new_len + 1, MYF(MY_WME | MY_FAE));
+    for (int i = 0; i < start; i++) {
+        new_query[i] = query[i];
+    }
+    for (int i = start; i < new_len; i++) {
+        new_query[i] = query[i + length];
+    }
+    new_query[new_len] = '\0';
+    opt_sp_hint_info.start = 0;
+    opt_sp_hint_info.length = 0;
+    opt_sp_hint_info.end = 0;
+    return new_query;
+}
 
 /*
   Check for unexpected "junk" after the end of query
@@ -7533,6 +7650,10 @@ int read_command(struct st_command** command_ptr)
 
   if (opt_result_format_version == 1)
     convert_to_format_v1(read_command_buf);
+  uint matched_pos = match_sp_hint(read_command_buf);
+  if (matched_pos) {
+      query_add_sp_hint(read_command_buf, matched_pos);
+  }
 
   char *p= read_command_buf;
   DBUG_PRINT("info", ("query: '%s'", read_command_buf));
@@ -7633,6 +7754,9 @@ static struct my_option my_long_options[] =
    "Max number of open connections to server",
    &opt_max_connections, &opt_max_connections, 0,
    GET_INT, REQUIRED_ARG, DEFAULT_MAX_CONN, 8, 5120, 0, 0, 0},
+  {"no-warning", 0, "force omit all warning and error info",
+   &opt_no_warning, & opt_no_warning, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"password", 'p', "Password to use when connecting to server.",
    0, 0, 0, GET_STR, OPT_ARG, 0, 0, 0, 0, 0, 0},
   {"protocol", OPT_MYSQL_PROTOCOL, "The protocol of connection (tcp,socket,pipe).",
@@ -7679,6 +7803,9 @@ static struct my_option my_long_options[] =
   {"sp-protocol", 0, "Use stored procedures for select.",
    &sp_protocol, &sp_protocol, 0,
    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"sort-result", 0, "sort displayed result.",
+   &opt_sort_result, &opt_sort_result, 0,
+   GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
 #include "sslopt-longopts.h"
   {"tail-lines", 0,
    "Number of lines of the result to include in a failure report.",
@@ -7711,6 +7838,9 @@ static struct my_option my_long_options[] =
   {"view-protocol", 0, "Use views for select.",
    &view_protocol, &view_protocol, 0,
    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"default-character-set", OPT_DEFAULT_CHARSET,
+   "Set the default character set.", &default_charset, &default_charset, 0,
+   GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { "explain-protocol", OPT_EXPLAIN_PROTOCOL,
    "Explain all SELECT/INSERT/REPLACE/UPDATE/DELETE statements",
    &explain_protocol, &explain_protocol, 0,
@@ -7741,6 +7871,8 @@ static struct my_option my_long_options[] =
     &opt_suite_dir, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   { "disable-explain", 0, "close explain run.", &disable_explain, &disable_explain, 0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
+  { "sp-hint", 0, "run test with hint", &opt_sp_hint, &opt_sp_hint, 0,
+    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -9318,9 +9450,17 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
       print_query= command->query;
       print_len= (int)(command->end - command->query);
     }
+    bool hint_str = match_sp_hint(read_command_buf) && opt_sp_hint_info.length;
+    if (hint_str) {
+        print_query = query_without_sp_hint(print_query);
+        print_len = strlen(print_query) - opt_sp_hint_info.length;
+    }
     replace_dynstr_append_mem(ds, print_query, print_len);
     dynstr_append_mem(ds, delimiter, delimiter_length);
     dynstr_append_mem(ds, "\n", 1);
+    if (hint_str) {
+        my_free(print_query);
+    }
   }
   
   /* We're done with this flag */
@@ -9439,7 +9579,8 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
     If it is a '?' in the query it may be a SQL level prepared
     statement already and we can't do it twice
   */
-  if (!(disable_explain && query_len >= 7 && (0 == strncmp(query, "explain", 7)))){
+  if (!(disable_explain && query_len >= 7 && (0 == strncmp(query, "explain", 7) || 0 == strncmp(query, "EXPLAIN", 7))))
+  {
     if (ps_protocol_enabled && complete_query && match_re(&ps_re, query)) {
       run_query_stmt(cn, command, query, query_len, &ds_sorted, ds, &ds_warnings);
     } else if (use_px && match_re(&parallel_re, query)) {
@@ -9462,7 +9603,7 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
   my_bool disable_result_sorted_bak = disable_result_sorted;
   if(query_len >= 7 && (0 == strncmp(query,"explain",7))) 
     disable_result_sorted = true;
-  if (display_result_sorted || (!disable_result_sorted))
+  if ((display_result_sorted || (!disable_result_sorted)) || opt_sort_result)
   {
     /* Sort the result set and append it to result */
     dynstr_append_sorted(ds, &ds_sorted, 0);
@@ -10144,6 +10285,13 @@ int main(int argc, char **argv)
   {
     open_file(opt_prologue);
   }
+  if (opt_no_warning)
+  {
+    property &pr= prop_list[P_WARN];
+    *pr.var= 1;
+    pr.set= 0;
+    var_set_int(pr.env_name, (1 != pr.reverse));
+  }
 
   verbose_msg("Start processing test commands from '%s' ...", cur_file->file_name);
   while (!abort_flag && !read_command(&command))
@@ -10235,7 +10383,10 @@ int main(int argc, char **argv)
         set_property(command, P_CONNECT, 1);
         break;
       case Q_ENABLE_WARNINGS:
-        set_property(command, P_WARN, 0);
+        if (!opt_no_warning)
+        {
+          set_property(command, P_WARN, 0);
+        }
         break;
       case Q_DISABLE_WARNINGS:
         set_property(command, P_WARN, 1);
@@ -10647,8 +10798,8 @@ int main(int argc, char **argv)
       }
       else
       {
-	/* Check that the output from test is equal to result file */
-	check_result();
+	    /* Check that the output from test is equal to result file */
+	    check_result();
       }
     }
   }

@@ -29,6 +29,6 @@
 
 #define OB_WELCOME_COPYRIGHT_NOTICE(first_year) \
   "Copyright (c) " first_year ", " COPYRIGHT_NOTICE_CURRENT_YEAR \
-   ", OB Corporation Ab and others.\n"
+   ", OceanBase and/or its affiliates. All rights reserved.\n"
 
 #endif /* _welcome_copyright_notice_h_ */
