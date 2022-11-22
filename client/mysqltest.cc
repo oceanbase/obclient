@@ -6670,9 +6670,6 @@ void do_connect(struct st_command *command)
 #endif
   if (opt_compress || con_compress)
     mysql_options(con_slot->mysql, MYSQL_OPT_COMPRESS, NullS);
-  if (0 != strcmp(default_charset, charset_info->csname) &&
-      !(charset_info = get_charset_by_csname(default_charset, MY_CS_PRIMARY, MYF(MY_WME))))
-      die("Invalid character set specified.");
   mysql_options(con_slot->mysql, MYSQL_SET_CHARSET_NAME,
                 csname?csname: charset_info->csname);
   if (opt_charsets_dir)
@@ -10233,6 +10230,9 @@ int main(int argc, char **argv)
                   (void *) &opt_connect_timeout);
   if (opt_compress)
     mysql_options(con->mysql,MYSQL_OPT_COMPRESS,NullS);
+  if (0 != strcmp(default_charset, charset_info->csname) &&
+    !(charset_info = get_charset_by_csname(default_charset, MY_CS_PRIMARY, MYF(MY_WME))))
+    die("Invalid character set specified.");
   mysql_options(con->mysql, MYSQL_SET_CHARSET_NAME,
                 charset_info->csname);
   if (opt_charsets_dir)
