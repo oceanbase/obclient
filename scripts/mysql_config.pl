@@ -27,7 +27,7 @@
 #  All unrecognized arguments to this script are passed to mysqld.
 #
 #  NOTE: This script will only be used on Windows until solved how to
-#        handle -lmariadb   -lpthread -ldl -lm -lssl -lcrypto -lz  -Wl,--no-undefined   and other strings inserted that might contain
+#        handle -lmariadb    and other strings inserted that might contain
 #        several arguments, possibly with spaces in them.
 #
 #  NOTE: This script was deliberately written to be as close to the shell
@@ -199,9 +199,9 @@ my $flags;
 $flags->{libs} =
   [@ldflags,@lib_opts,'','','',''];
 $flags->{libs_r} =
-  [@ldflags,@lib_r_opts,'','-lmariadb   -lpthread -ldl -lm -lssl -lcrypto -lz  -Wl,--no-undefined  ',''];
+  [@ldflags,@lib_r_opts,'','-lmariadb   ',''];
 $flags->{embedded_libs} =
-  [@ldflags,@lib_e_opts,'dl','','-lmariadb   -lpthread -ldl -lm -lssl -lcrypto -lz  -Wl,--no-undefined  ','',''];
+  [@ldflags,@lib_e_opts,'dl','','-lmariadb   ','',''];
 
 $flags->{include} = ["-I$pkgincludedir"];
 $flags->{cflags}  = [@{$flags->{include}},split(" ",'')];

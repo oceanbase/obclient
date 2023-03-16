@@ -610,6 +610,7 @@
 # The root patch shold start with '/'
 /BUILD/**
 /.secignore
+/.git/**
 --------------------------------------------------------
 # Config the ignored fold to escape the Chinese scan by GLOB wildcard
 **/*.md

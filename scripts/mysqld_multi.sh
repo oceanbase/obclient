@@ -29,12 +29,12 @@ my @defaults_options;   #  Leading --no-defaults, --defaults-file, etc.
 $opt_example       = 0;
 $opt_help          = 0;
 $opt_log           = undef();
-$opt_mysqladmin    = "@bindir@/mysqladmin";
-$opt_mysqld        = "@sbindir@/mysqld";
+$opt_mysqladmin    = "";
+$opt_mysqld        = "";
 $opt_no_log        = 0;
 $opt_password      = undef();
 $opt_tcp_ip        = 0;
-$opt_user          = "root";
+$opt_user          = "";
 $opt_version       = 0;
 $opt_silent        = 0;
 $opt_verbose       = 0;

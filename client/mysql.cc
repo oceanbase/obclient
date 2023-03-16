@@ -206,6 +206,8 @@ static my_bool ignore_errors=0,wait_flag=0,quick=0,
 static my_bool debug_info_flag, debug_check_flag, batch_abort_on_error;
 static my_bool column_types_flag;
 static my_bool preserve_comments= 0;
+static my_bool preserve_comments_invalid= 0;
+static my_bool skip_comments = 0;
 static my_bool in_com_source, aborted= 0;
 static ulong opt_max_allowed_packet, opt_net_buffer_length;
 static uint verbose=0,opt_silent=0,opt_mysql_port=0, opt_local_infile=0;
@@ -320,6 +322,8 @@ static void report_progress(const MYSQL *mysql, uint stage, uint max_stage,
 static void report_progress_end();
 
 static void get_current_db();
+
+static my_bool prompt_cmd_oracle(const char *str, char **text);
 
 /* A structure which contains information on the commands this program
    can understand. */
@@ -1280,12 +1284,12 @@ void init_pl_sql(void)
     "^("
     //Ç°×º create [or replace]
     "[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?"
-    // package( À¨ºÅ 3 ~ 6 )
+    // package( ï¿½ï¿½ï¿½ï¿½ 3 ~ 6 )
     "(VIEW|PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?|LIBRARY|QUEUE|JAVA[[:space:]]+(SOURCE|CLASS)|DIMENSION|ASSEMBLY|HIERARCHY|ATTRIBUTE[[:space:]]+DIMENSION|ANALYTIC VIEW)[[:space:]]+"
-    // schema ( À¨ºÅ 7 ~ 9)
+    // schema ( ï¿½ï¿½ï¿½ï¿½ 7 ~ 9)
     //"((\\\")?([[:alnum:]_]+)\\\"?\\.)?"
     "(([[:alnum:]$_]+)\\.|\\\"([^\"]*)\\\"\\.)?[[:space:]]*"
-    // object ( À¨ºÅ 10 ~ 12)
+    // object ( ï¿½ï¿½ï¿½ï¿½ 10 ~ 12)
     //"(\\\")?([[:alnum:]_]+)\\\"?[[:space:]]*"
     "(([[:alnum:]$_]+)|\\\"([^\"]*)\\\")?[[:space:]]*"
     ")";
@@ -1294,11 +1298,11 @@ void init_pl_sql(void)
     "^("
     //Ç°×º show err[ors]
     "[[:space:]]*SHOW[[:space:]]+ERR(ORS)?"
-    //package( À¨ºÅ 4 ~ 7 )
+    //package( ï¿½ï¿½ï¿½ï¿½ 4 ~ 7 )
     "([[:space:]]+(VIEW|PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?|LIBRARY|QUEUE|JAVA[[:space:]]+(SOURCE|CLASS)|DIMENSION|ASSEMBLY|HIERARCHY|ATTRIBUTE[[:space:]]+DIMENSION|ANALYTIC VIEW)[[:space:]]+"
-    //schema( À¨ºÅ 8 ~ 10 )
+    //schema( ï¿½ï¿½ï¿½ï¿½ 8 ~ 10 )
     "((\\\")?([[:alnum:]_]+)\\\"?\\.)?"
-    //object( À¨ºÅ 11 ~ 12 )
+    //object( ï¿½ï¿½ï¿½ï¿½ 11 ~ 12 )
     "(\\\")?([[:alnum:]_]+)\\\"?)?"
     "[[:space:]]*"
     "$)";
@@ -1437,6 +1441,7 @@ int main(int argc,char *argv[])
     my_end(0);
     exit(1);
   }
+  preserve_comments = (skip_comments ? 0:1);
   sf_leaking_memory= 0;
   glob_buffer.realloc(512);
   completion_hash_init(&ht, 128);
@@ -1748,7 +1753,11 @@ static struct my_option my_long_options[] =
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"comments", 'c', "Preserve comments. Send comments to the server."
    " The default is --skip-comments (discard comments), enable with --comments.",
-   &preserve_comments, &preserve_comments,
+   &preserve_comments_invalid, &preserve_comments_invalid,
+   0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"skip-comments", 0, "Preserve comments. Send comments to the server."
+   " The default is comments, disable with --skip-comments",
+   &skip_comments, &skip_comments,
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"compress", 'C', "Use compression in server/client protocol.",
    &opt_compress, &opt_compress, 0, GET_BOOL, NO_ARG, 0, 0, 0,
@@ -2358,6 +2367,17 @@ static int read_and_execute(bool interactive)
       break;
     }
 
+    //support oracle mode prompt
+    char *text = NULL;
+    if (mysql.oracle_mode && (named_cmds || glob_buffer.is_empty()) &&
+      !ml_comment && !in_string && prompt_cmd_oracle(line, &text)) {
+      if (text == NULL) {
+        text = (char*)"";
+      }
+      tee_puts(text, stdout);
+      continue;
+    }
+
     /*
       Check if line is a mysql command line
       (We want to allow help, print and clear anywhere at line start
@@ -2537,6 +2557,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
   COMMANDS *com;
   bool need_space= 0;
   bool ss_comment= 0;
+  bool is_slash = 0;
   DBUG_ENTER("add_line");
 
   if (!line[0] && buffer.is_empty())
@@ -2546,6 +2567,15 @@ static bool add_line(String &buffer, char *line, size_t line_length,
     add_history(line);
 #endif
   char *end_of_line= line + line_length;
+
+  for (pos = line; pos < end_of_line; pos++) {
+    if (*pos == '/')
+      is_slash = 1;
+    if (*pos != '\t' && *pos != ' ' && *pos != '/') {
+      is_slash = 0;
+      break;
+    }
+  }
 
   for (pos= out= line; pos < end_of_line; pos++)
   {
@@ -2639,20 +2669,20 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       }
     }
     else if (!*ml_comment && ((*in_string && mysql.oracle_mode && pos + 1 == end_of_line) || !*in_string) && 
-      ((!*is_pl_escape_sql && is_prefix(pos, delimiter)) || (*is_pl_escape_sql && *pos == '/') ))
+      ((!*is_pl_escape_sql && is_prefix(pos, delimiter)) || (*is_pl_escape_sql && *pos == '/' && is_slash) ))
     {
       /*
-       * ÓÐÈýÖÖÇé¿ö²»×ö×Ô¶¯·Ö¸î·û×ª»»:
-       * 1. Èç¹û delimiter ±¾Éí¾ÍÊÇ /
-       * 2. Èç¹ûÊÇ Mysql Ä£Ê½
-       * 3. Èç¹ûÓÃ»§Ö¸¶¨ÁË delimiter,
-       * ·ñÔòÈç¹û»¹²»ÊÇ is_pl_escape_sql, ¾ÍÐèÒªÈ¥ÅÐ¶ÏÒ»ÏÂ
+       * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô¶ï¿½ï¿½Ö¸ï¿½ï¿½×ªï¿½ï¿½:
+       * 1. ï¿½ï¿½ï¿½ delimiter ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ /
+       * 2. ï¿½ï¿½ï¿½ï¿½ï¿½ Mysql Ä£Ê½
+       * 3. ï¿½ï¿½ï¿½ï¿½Ã»ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½ delimiter,
+       * ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ is_pl_escape_sql, ï¿½ï¿½ï¿½ï¿½ÒªÈ¥ï¿½Ð¶ï¿½Ò»ï¿½ï¿½
        */
       if (mysql.oracle_mode
         && !is_user_specify_delimiter
         && !is_prefix("/", delimiter)
         && !*is_pl_escape_sql) {
-        //ÏÈ°ÑÇ°ÃæµÄÄÚÈÝ¶¼×°µ½ buffer Àï, ÒòÎªÓÐ¿ÉÄÜÊÇ·ÖÁ½´ÎÊäÈëµÄ
+        //ï¿½È°ï¿½Ç°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý¶ï¿½×°ï¿½ï¿½ buffer ï¿½ï¿½, ï¿½ï¿½Îªï¿½Ð¿ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         if (out != line) {
           buffer.append(line, (uint32)(out - line));
           out = line;
@@ -2660,9 +2690,9 @@ static bool add_line(String &buffer, char *line, size_t line_length,
 
         if (0 == (regexec(&pl_escape_sql_re, buffer.c_ptr_safe(), 0, 0, 0))) {
           *is_pl_escape_sql = 1;
-          //Ô­À´µÄ·Ö¸ô·ûÒ²Òª·Å½øÈ¥
+          //Ô­ï¿½ï¿½ï¿½Ä·Ö¸ï¿½ï¿½ï¿½Ò²Òªï¿½Å½ï¿½È¥
           buffer.append(pos, delimiter_length);
-          //for Ñ­»·»á¼Ó1, ËùÒÔÕâÀïÐèÒª¼õ1
+          //for Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½1, ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Òªï¿½ï¿½1
           pos += delimiter_length - 1;
           continue;
         }
@@ -4594,9 +4624,14 @@ print_table_data(MYSQL_RES *result)
   while ((field = mysql_fetch_field(result)))
   {
     uint length= column_names ? field->name_length : 0;
-    if (quick)
-      length= MY_MAX(length,field->length);
-    else
+    if (quick) {
+      if (mysql.oracle_mode) {
+        // å¯¹äºŽoracleæ¨¡å¼ï¼Œ ä½¿ç”¨max_length, max_lengthä¼šåœ¨use resultä¸­æ”¹å˜
+        length= MY_MAX(length, field->max_length);
+      } else {
+        length= MY_MAX(length,field->length);
+      }
+    } else
       length= MY_MAX(length,field->max_length);
     if (length < 4 && !IS_NOT_NULL(field->flags))
       length=4;					// Room for "NULL"
@@ -6661,3 +6696,28 @@ static void report_progress_end()
 {
 }
 #endif
+
+static my_bool prompt_cmd_oracle(const char *str, char **text) {
+  my_bool rst = 0;
+  char *p = (char*)str;
+  char *start = NULL, *end = NULL;
+  int len = 0;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  start = p;
+  while (*p != '\0' && !my_isspace(charset_info, *p))
+    p++;
+  len = p - start;
+  if (strncasecmp("prompt", start, len ) != 0 || len<3){
+    return rst;
+  }
+
+  rst = 1;
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  *text = p;
+  return rst;
+}

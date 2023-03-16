@@ -86,7 +86,7 @@ else
 fi
 
 # Create options 
-libs="-L$pkglibdir  -lmariadb -lpthread -ldl -lm -lssl -lcrypto -lz"
+libs="-L$pkglibdir  -lmariadb"
 embedded_libs="-L$pkglibdir  -lmysqld"
 
 include="-I$pkgincludedir"

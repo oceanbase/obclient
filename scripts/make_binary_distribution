@@ -1,1 +1,1 @@
-cd /home/jianliang.yjl/project/server-10.4 && '/usr/local/bin/cpack' -G TGZ --config CPackConfig.cmake
+cd /home/weihao.twh/workspace/oceanbase/ce-publish/obclient && '/.vos/.dep_cache/6ab2709c82be4774f061f76418fefdcc/var/usr/local/bin/cpack' -G TGZ --config CPackConfig.cmake

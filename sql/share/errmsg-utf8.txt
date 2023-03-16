@@ -7545,6 +7545,312 @@ ER_REPLACE_INACCESSIBLE_ROWS
 ER_ALTER_OPERATION_NOT_SUPPORTED_REASON_GIS
   eng "Do not support online operation on table with GIS index"
 
+ER_ILLEGAL_USER_VAR 42000 S1009
+  eng "User variable name '%-.100s' is illegal"
+
+ER_GTID_MODE_OFF
+  eng "Cannot %s when GTID_MODE = OFF."
+
+ER_UNSUPPORTED_BY_REPLICATION_THREAD
+  eng "Cannot %s from a replication slave thread."
+
+ER_INCORRECT_TYPE
+  eng "Incorrect type for argument %s in function %s."
+
+ER_FIELD_IN_ORDER_NOT_SELECT
+  eng "Expression #%u of ORDER BY clause is not in SELECT list, references column '%-.192s' which is not in SELECT list; this is incompatible with %s"
+
+ER_AGGREGATE_IN_ORDER_NOT_SELECT
+  eng "Expression #%u of ORDER BY clause is not in SELECT list, contains aggregate function; this is incompatible with %s"
+
+ER_INVALID_RPL_WILD_TABLE_FILTER_PATTERN
+  eng "Supplied filter list contains a value which is not in the required format 'db_pattern.table_pattern'"
+
+ER_NET_OK_PACKET_TOO_LARGE 08S01
+  eng "OK packet too large"
+
+ER_INVALID_JSON_DATA
+  eng "Invalid JSON data provided to function %s: %s"
+
+ER_INVALID_GEOJSON_MISSING_MEMBER
+  eng "Invalid GeoJSON data provided to function %s: Missing required member '%s'"
+
+ER_INVALID_GEOJSON_WRONG_TYPE
+  eng "Invalid GeoJSON data provided to function %s: Member '%s' must be of type '%s'"
+
+ER_INVALID_GEOJSON_UNSPECIFIED
+  eng "Invalid GeoJSON data provided to function %s"
+
+ER_DIMENSION_UNSUPPORTED
+  eng "Unsupported number of coordinate dimensions in function %s: Found %u, expected %u"
+
+ER_SLAVE_CHANNEL_DOES_NOT_EXIST
+  eng "Slave channel '%s' does not exist."
+
+ER_SLAVE_MULTIPLE_CHANNELS_HOST_PORT
+  eng "A slave channel '%s' already exists for the given host and port combination."
+
+ER_SLAVE_CHANNEL_NAME_INVALID_OR_TOO_LONG
+  eng "Couldn't create channel: Channel name is either invalid or too long."
+
+ER_SLAVE_NEW_CHANNEL_WRONG_REPOSITORY
+  eng "To have multiple channels, repository cannot be of type FILE; Please check the repository configuration and convert them to TABLE."
+
+ER_SLAVE_CHANNEL_DELETE
+   eng "Cannot delete slave info objects for channel '%s'."
+
+ER_SLAVE_MULTIPLE_CHANNELS_CMD
+   eng "Multiple channels exist on the slave. Please provide channel name as an argument."
+
+ER_SLAVE_MAX_CHANNELS_EXCEEDED
+   eng "Maximum number of replication channels allowed exceeded."
+
+ER_SLAVE_CHANNEL_MUST_STOP
+   eng "This operation cannot be performed with running replication threads; run STOP SLAVE FOR CHANNEL '%s' first"
+
+ER_SLAVE_CHANNEL_NOT_RUNNING
+   eng "This operation requires running replication threads; configure slave and run START SLAVE FOR CHANNEL '%s'"
+
+ER_SLAVE_CHANNEL_WAS_RUNNING
+   eng "Replication thread(s) for channel '%s' are already runnning."
+
+ER_SLAVE_CHANNEL_WAS_NOT_RUNNING
+  eng "Replication thread(s) for channel '%s' are already stopped."
+
+ER_SLAVE_CHANNEL_SQL_THREAD_MUST_STOP
+  eng "This operation cannot be performed with a running slave sql thread; run STOP SLAVE SQL_THREAD FOR CHANNEL '%s' first."
+
+ER_SLAVE_CHANNEL_SQL_SKIP_COUNTER
+  eng "When sql_slave_skip_counter > 0, it is not allowed to start more than one SQL thread by using 'START SLAVE [SQL_THREAD]'. Value of sql_slave_skip_counter can only be used by one SQL thread at a time. Please use 'START SLAVE [SQL_THREAD] FOR CHANNEL' to start the SQL thread which will use the value of sql_slave_skip_counter."
+
+# When using this error message, use the ER_WRONG_FIELD_WITH_GROUP error code.
+ER_WRONG_FIELD_WITH_GROUP_V2
+  eng "Expression #%u of %s is not in GROUP BY clause and contains nonaggregated column '%-.192s' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by"
+
+# When using this error message, use the ER_MIX_OF_GROUP_FUNC_AND_FIELDS error code.
+ER_MIX_OF_GROUP_FUNC_AND_FIELDS_V2
+  eng "In aggregated query without GROUP BY, expression #%u of %s contains nonaggregated column '%-.192s'; this is incompatible with sql_mode=only_full_group_by"
+
+# When using this error message, use the ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT error code.
+ER_WARN_DEPRECATED_SYSVAR_UPDATE
+  eng "Updating '%s' is deprecated. It will be made read-only in a future release."
+
+# Use this error message to deprecate SQL MODES
+ER_WARN_DEPRECATED_SQLMODE
+  eng "Changing sql mode '%s' is deprecated. It will be removed in a future release."
+
+ER_CANNOT_LOG_PARTIAL_DROP_DATABASE_WITH_GTID
+  eng "DROP DATABASE failed; some tables may have been dropped but the database directory remains. The GTID has not been added to GTID_EXECUTED and the statement was not written to the binary log. Fix this as follows: (1) remove all files from the database directory %-.192s; (2) SET GTID_NEXT='%-.192s'; (3) DROP DATABASE `%-.192s`."
+
+ER_GROUP_REPLICATION_CONFIGURATION
+  eng "The server is not configured properly to be an active member of the group. Please see more details on error log."
+
+ER_GROUP_REPLICATION_RUNNING
+  eng "The START GROUP_REPLICATION command failed since the group is already running."
+
+ER_GROUP_REPLICATION_APPLIER_INIT_ERROR
+  eng "The START GROUP_REPLICATION command failed as the applier module failed to start."
+
+ER_GROUP_REPLICATION_STOP_APPLIER_THREAD_TIMEOUT
+  eng "The STOP GROUP_REPLICATION command execution is incomplete: The applier thread got the stop signal while it was busy. The applier thread will stop once the current task is complete."
+
+ER_GROUP_REPLICATION_COMMUNICATION_LAYER_SESSION_ERROR
+  eng "The START GROUP_REPLICATION command failed as there was an error when initializing the group communication layer."
+
+ER_GROUP_REPLICATION_COMMUNICATION_LAYER_JOIN_ERROR
+  eng "The START GROUP_REPLICATION command failed as there was an error when joining the communication group."
+
+ER_BEFORE_DML_VALIDATION_ERROR
+  eng "The table does not comply with the requirements by an external plugin."
+
+ER_PREVENTS_VARIABLE_WITHOUT_RBR
+  eng "Cannot change the value of variable %s without binary log format as ROW."
+
+ER_RUN_HOOK_ERROR
+  eng "Error on observer while running replication hook '%s'."
+
+ER_TRANSACTION_ROLLBACK_DURING_COMMIT
+  eng "Plugin instructed the server to rollback the current transaction."
+
+ER_GENERATED_COLUMN_FUNCTION_IS_NOT_ALLOWED
+  eng "Expression of generated column '%s' contains a disallowed function."
+
+ER_UNSUPPORTED_ALTER_INPLACE_ON_VIRTUAL_COLUMN
+  eng "INPLACE ADD or DROP of virtual columns cannot be combined with other ALTER TABLE actions"
+
+ER_WRONG_FK_OPTION_FOR_GENERATED_COLUMN
+  eng "Cannot define foreign key with %s clause on a generated column."
+
+ER_NON_DEFAULT_VALUE_FOR_GENERATED_COLUMN
+  eng "The value specified for generated column '%s' in table '%s' is not allowed."
+
+ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN
+  eng "'%s' is not supported for generated columns."
+
+ER_GENERATED_COLUMN_NON_PRIOR
+  eng "Generated column can refer only to generated columns defined prior to it."
+
+ER_DEPENDENT_BY_GENERATED_COLUMN
+  eng "Column '%s' has a generated column dependency."
+
+ER_GENERATED_COLUMN_REF_AUTO_INC,
+  eng "Generated column '%s' cannot refer to auto-increment column."
+
+ER_FEATURE_NOT_AVAILABLE
+  eng "The '%-.64s' feature is not available; you need to remove '%-.64s' or use MySQL built with '%-.64s'"
+
+ER_CANT_SET_GTID_MODE
+  eng "SET @@GLOBAL.GTID_MODE = %-.64s is not allowed because %-.384s."
+
+ER_CANT_USE_AUTO_POSITION_WITH_GTID_MODE_OFF
+  eng "The replication receiver thread%-.192s cannot start in AUTO_POSITION mode: this server uses @@GLOBAL.GTID_MODE = OFF."
+
+ER_CANT_REPLICATE_ANONYMOUS_WITH_AUTO_POSITION
+  eng "Cannot replicate anonymous transaction when AUTO_POSITION = 1, at file %.512s, position %lld."
+
+ER_CANT_REPLICATE_ANONYMOUS_WITH_GTID_MODE_ON
+  eng "Cannot replicate anonymous transaction when @@GLOBAL.GTID_MODE = ON, at file %.512s, position %lld."
+
+ER_CANT_REPLICATE_GTID_WITH_GTID_MODE_OFF
+  eng "Cannot replicate GTID-transaction when @@GLOBAL.GTID_MODE = OFF, at file %.512s, position %lld."
+
+ER_CANT_SET_ENFORCE_GTID_CONSISTENCY_ON_WITH_ONGOING_GTID_VIOLATING_TRANSACTIONS
+  eng "Cannot set ENFORCE_GTID_CONSISTENCY = ON because there are ongoing transactions that violate GTID consistency."
+
+ER_SET_ENFORCE_GTID_CONSISTENCY_WARN_WITH_ONGOING_GTID_VIOLATING_TRANSACTIONS
+  eng "There are ongoing transactions that violate GTID consistency."
+
+ER_ACCOUNT_HAS_BEEN_LOCKED
+  eng "Access denied for user '%-.48s'@'%-.64s'. Account is locked."
+  pol "Odmowa dostępu dla użytkownika '%-.48s'@'%-.64s'. Konto zablokowane."
+
+ER_WRONG_TABLESPACE_NAME 42000
+  eng "Incorrect tablespace name `%-.192s`"
+
+ER_TABLESPACE_IS_NOT_EMPTY
+  eng "Tablespace `%-.192s` is not empty."
+
+ER_WRONG_FILE_NAME
+  eng "Incorrect File Name '%s'."
+
+ER_BOOST_GEOMETRY_INCONSISTENT_TURNS_EXCEPTION
+  eng "Inconsistent intersection points."
+
+ER_WARN_OPTIMIZER_HINT_SYNTAX_ERROR
+  eng "Optimizer hint syntax error"
+
+ER_WARN_BAD_MAX_EXECUTION_TIME
+  eng "Unsupported MAX_EXECUTION_TIME"
+
+ER_WARN_UNSUPPORTED_MAX_EXECUTION_TIME
+  eng "MAX_EXECUTION_TIME hint is supported by top-level standalone SELECT statements only"
+
+ER_WARN_CONFLICTING_HINT
+  eng "Hint %s is ignored as conflicting/duplicated"
+
+ER_WARN_UNKNOWN_QB_NAME
+  eng "Query block name %s is not found for %s hint"
+
+ER_UNRESOLVED_HINT_NAME
+  eng "Unresolved name %s for %s hint"
+
+ER_WARN_ON_MODIFYING_GTID_EXECUTED_TABLE
+  eng "Please do not modify the %s table. This is a mysql internal system table to store GTIDs for committed transactions. Modifying it can lead to an inconsistent GTID state."
+
+ER_PLUGGABLE_PROTOCOL_COMMAND_NOT_SUPPORTED
+  eng "Command not supported by pluggable protocols"
+
+ER_LOCKING_SERVICE_WRONG_NAME 42000
+  eng "Incorrect locking service lock name '%-.192s'."
+
+# Should be different from ER_LOCK_DEADLOCK since it doesn't cause implicit
+# rollback. Should not be mapped to SQLSTATE 40001 for the same reason.
+ER_LOCKING_SERVICE_DEADLOCK
+  eng "Deadlock found when trying to get locking service lock; try releasing locks and restarting lock acquisition."
+
+ER_LOCKING_SERVICE_TIMEOUT
+  eng "Service lock wait timeout exceeded."
+
+ER_GIS_MAX_POINTS_IN_GEOMETRY_OVERFLOWED
+  eng "Parameter %s exceeds the maximum number of points in a geometry (%lu) in function %s."
+
+ER_SQL_MODE_MERGED
+  eng "'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release."
+
+ER_VTOKEN_PLUGIN_TOKEN_MISMATCH
+  eng "Version token mismatch for %.*s. Correct value %.*s"
+  bg "Клеймото за версия %.*s не съвпада. Правилната стойност е %.*s"
+
+ER_VTOKEN_PLUGIN_TOKEN_NOT_FOUND
+  eng "Version token %.*s not found."
+  bg "Не е намерено клеймо за версия %.*s"
+
+ER_CANT_SET_VARIABLE_WHEN_OWNING_GTID
+  eng "Variable %-.192s cannot be changed by a client that owns a GTID. The client owns %s. Ownership is released on COMMIT or ROLLBACK."
+
+ER_SLAVE_CHANNEL_OPERATION_NOT_ALLOWED
+   eng "%-.192s cannot be performed on channel '%-.192s'."
+
+ER_INVALID_JSON_TEXT 22032
+  eng "Invalid JSON text: \"%s\" at position %u in value for column '%-.200s'."
+
+# The last parameter is now always empty but kept for backward compatibility
+ER_INVALID_JSON_TEXT_IN_PARAM 22032
+  eng "Invalid JSON text in argument %u to function %s: \"%s\" at position %u.%-.0s"
+
+ER_INVALID_JSON_BINARY_DATA
+  eng "The JSON binary value contains invalid data."
+
+ER_INVALID_JSON_PATH 42000
+  eng "Invalid JSON path expression. The error is around character position %u.%-.200s"
+
+ER_INVALID_JSON_CHARSET 22032
+  eng "Cannot create a JSON value from a string with CHARACTER SET '%s'."
+
+ER_INVALID_JSON_CHARSET_IN_FUNCTION 22032
+  eng "Invalid JSON character data provided to function %s: '%s'; utf8 is required."
+
+ER_INVALID_TYPE_FOR_JSON 22032
+  eng "Invalid data type for JSON data in argument %u to function %s; a JSON string or JSON type is required."
+
+ER_INVALID_CAST_TO_JSON 22032
+  eng "Cannot CAST value to JSON."
+
+ER_INVALID_JSON_PATH_CHARSET 42000
+  eng "A path expression must be encoded in the utf8 character set. The path expression '%-.200s' is encoded in character set '%-.200s'."
+
+ER_INVALID_JSON_PATH_WILDCARD 42000
+  eng "In this situation, path expressions may not contain the * and ** tokens."
+
+ER_JSON_VALUE_TOO_BIG 22032
+  eng "The JSON value is too big to be stored in a JSON column."
+
+ER_JSON_KEY_TOO_BIG 22032
+  eng "The JSON object contains a key name that is too long."
+
+ER_JSON_USED_AS_KEY 42000
+  eng "JSON column '%-.192s' cannot be used in key specification."
+
+ER_JSON_VACUOUS_PATH 42000
+  eng "The path expression '$' is not allowed in this context."
+
+ER_JSON_BAD_ONE_OR_ALL_ARG 42000
+  eng "The oneOrAll argument to %s may take these values: 'one' or 'all'."
+
+# The second parameter is now always empty but kept for backward compatibility
+ER_NUMERIC_JSON_VALUE_OUT_OF_RANGE 22003
+  eng "Out of range JSON value for CAST to %s%-.0s from column %s at row %ld"
+
+# The second parameter is now always empty but kept for backward compatibility
+ER_INVALID_JSON_VALUE_FOR_CAST 22018
+  eng "Invalid JSON value for CAST to %s%-.0s from column %s at row %ld"
+
+ER_JSON_DOCUMENT_TOO_DEEP 22032
+  eng "The JSON document exceeds the maximum depth."
+
+ER_JSON_DOCUMENT_NULL_KEY 22032
+  eng "JSON documents may not contain NULL member names."
+
 # MariaDB extra error numbers starts from 4000
 skip-to-error-number 4000
 

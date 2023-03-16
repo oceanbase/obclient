@@ -425,112 +425,112 @@ ADD_SUBDIRECTORY(vio)
 ADD_SUBDIRECTORY(mysys)
 ADD_SUBDIRECTORY(mysys_ssl)
 ADD_SUBDIRECTORY(client)
-# ADD_SUBDIRECTORY(extra)
-# ADD_SUBDIRECTORY(libservices)
-# ADD_SUBDIRECTORY(sql/share)
+ADD_SUBDIRECTORY(extra)
+ADD_SUBDIRECTORY(libservices)
+ADD_SUBDIRECTORY(sql/share)
 
-# IF(NOT WITHOUT_SERVER)
-# 	#ADD_SUBDIRECTORY(tests)
-#   ADD_SUBDIRECTORY(sql)
-#   OPTION (WITH_EMBEDDED_SERVER "Compile MySQL with embedded server" OFF)
-#   IF(WITH_EMBEDDED_SERVER) 
-#    ADD_SUBDIRECTORY(libmysqld)
-#    ADD_SUBDIRECTORY(libmysqld/examples)
-#    ADD_SUBDIRECTORY(unittest/embedded)
-#   ENDIF(WITH_EMBEDDED_SERVER)
+IF(NOT WITHOUT_SERVER)
+	#ADD_SUBDIRECTORY(tests)
+  ADD_SUBDIRECTORY(sql)
+  OPTION (WITH_EMBEDDED_SERVER "Compile MySQL with embedded server" OFF)
+  IF(WITH_EMBEDDED_SERVER) 
+   ADD_SUBDIRECTORY(libmysqld)
+   ADD_SUBDIRECTORY(libmysqld/examples)
+   ADD_SUBDIRECTORY(unittest/embedded)
+  ENDIF(WITH_EMBEDDED_SERVER)
 
-#   #ADD_SUBDIRECTORY(mysql-test)
-#   #ADD_SUBDIRECTORY(mysql-test/lib/My/SafeProcess)
-#   #ADD_SUBDIRECTORY(sql-bench)
-#   IF(WIN32)
-#     ADD_SUBDIRECTORY(win/upgrade_wizard)
-#     ADD_SUBDIRECTORY(win/packaging)
-#   ENDIF()
-# ENDIF()
+  #ADD_SUBDIRECTORY(mysql-test)
+  #ADD_SUBDIRECTORY(mysql-test/lib/My/SafeProcess)
+  #ADD_SUBDIRECTORY(sql-bench)
+  IF(WIN32)
+    ADD_SUBDIRECTORY(win/upgrade_wizard)
+    ADD_SUBDIRECTORY(win/packaging)
+  ENDIF()
+ENDIF()
 
-# IF(UNIX)
-#   ADD_SUBDIRECTORY(man)
-# ENDIF()
+IF(UNIX)
+  ADD_SUBDIRECTORY(man)
+ENDIF()
 
-# INCLUDE(cmake/abi_check.cmake)
-# INCLUDE(cmake/tags.cmake)
-# INCLUDE(for_clients)
-# ADD_SUBDIRECTORY(scripts)
-# ADD_SUBDIRECTORY(support-files)
-# ADD_SUBDIRECTORY(extra/aws_sdk)
+INCLUDE(cmake/abi_check.cmake)
+INCLUDE(cmake/tags.cmake)
+INCLUDE(for_clients)
+ADD_SUBDIRECTORY(scripts)
+ADD_SUBDIRECTORY(support-files)
+ADD_SUBDIRECTORY(extra/aws_sdk)
 
-# IF(NOT CMAKE_CROSSCOMPILING)
-#   SET(EXPORTED comp_err comp_sql factorial)
-#   IF(NOT WITHOUT_SERVER)
-#     SET(EXPORTED ${EXPORTED} gen_lex_hash gen_lex_token)
-#   ENDIF()
-#   # minimal target to build only binaries for export
-#   ADD_CUSTOM_TARGET(import_executables DEPENDS ${EXPORTED})
-#   EXPORT(TARGETS ${EXPORTED} FILE ${CMAKE_BINARY_DIR}/import_executables.cmake)
-# ENDIF()
+IF(NOT CMAKE_CROSSCOMPILING)
+  SET(EXPORTED comp_err comp_sql factorial)
+  IF(NOT WITHOUT_SERVER)
+    SET(EXPORTED ${EXPORTED} gen_lex_hash gen_lex_token)
+  ENDIF()
+  # minimal target to build only binaries for export
+  ADD_CUSTOM_TARGET(import_executables DEPENDS ${EXPORTED})
+  EXPORT(TARGETS ${EXPORTED} FILE ${CMAKE_BINARY_DIR}/import_executables.cmake)
+ENDIF()
 
-# CONFIGURE_FILE(config.h.cmake   ${CMAKE_BINARY_DIR}/include/my_config.h)
-# CONFIGURE_FILE(config.h.cmake   ${CMAKE_BINARY_DIR}/include/config.h)
-# CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/include/mysql_version.h.in
-#                ${CMAKE_BINARY_DIR}/include/mysql_version.h )
-# CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/sql/sql_builtin.cc.in
-#     ${CMAKE_BINARY_DIR}/sql/sql_builtin.cc)
+CONFIGURE_FILE(config.h.cmake   ${CMAKE_BINARY_DIR}/include/my_config.h)
+CONFIGURE_FILE(config.h.cmake   ${CMAKE_BINARY_DIR}/include/config.h)
+CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/include/mysql_version.h.in
+               ${CMAKE_BINARY_DIR}/include/mysql_version.h )
+CONFIGURE_FILE(${CMAKE_SOURCE_DIR}/sql/sql_builtin.cc.in
+    ${CMAKE_BINARY_DIR}/sql/sql_builtin.cc)
 
-# IF(GIT_EXECUTABLE AND EXISTS ${PROJECT_SOURCE_DIR}/.git)
-#   EXECUTE_PROCESS(
-#     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-#       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-#        OUTPUT_VARIABLE OUT RESULT_VARIABLE RES)
-#   IF(RES EQUAL 0)
-#     STRING(REGEX REPLACE "\n$" "" SOURCE_REVISION "${OUT}")
-#   ENDIF()
-# ENDIF()
-# IF(SOURCE_REVISION OR
-#   (NOT EXISTS ${PROJECT_SOURCE_DIR}/include/source_revision.h))
-#   CONFIGURE_FILE(${PROJECT_SOURCE_DIR}/include/source_revision.h.in
-#                ${PROJECT_BINARY_DIR}/include/source_revision.h )
-# ENDIF()
+IF(GIT_EXECUTABLE AND EXISTS ${PROJECT_SOURCE_DIR}/.git)
+  EXECUTE_PROCESS(
+    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+       OUTPUT_VARIABLE OUT RESULT_VARIABLE RES)
+  IF(RES EQUAL 0)
+    STRING(REGEX REPLACE "\n$" "" SOURCE_REVISION "${OUT}")
+  ENDIF()
+ENDIF()
+IF(SOURCE_REVISION OR
+  (NOT EXISTS ${PROJECT_SOURCE_DIR}/include/source_revision.h))
+  CONFIGURE_FILE(${PROJECT_SOURCE_DIR}/include/source_revision.h.in
+               ${PROJECT_BINARY_DIR}/include/source_revision.h )
+ENDIF()
 
-# CONFIGURE_FILE(
-#     ${CMAKE_SOURCE_DIR}/cmake/info_macros.cmake.in
-#     ${CMAKE_BINARY_DIR}/info_macros.cmake @ONLY)
+CONFIGURE_FILE(
+    ${CMAKE_SOURCE_DIR}/cmake/info_macros.cmake.in
+    ${CMAKE_BINARY_DIR}/info_macros.cmake @ONLY)
 
-# # Handle the "INFO_*" files.
-# INCLUDE(${CMAKE_BINARY_DIR}/info_macros.cmake)
-# # Source: This can be done during the cmake phase, all information is
-# # available, but should be repeated on each "make" just in case someone
-# # does "cmake ; make ; git pull ; make".
-# CREATE_INFO_SRC(${CMAKE_BINARY_DIR}/Docs)
-# ADD_CUSTOM_TARGET(INFO_SRC ALL
-#   COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_src.cmake
-#   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-# )
-# # Build flags: This must be postponed to the make phase.
-# ADD_CUSTOM_TARGET(INFO_BIN ALL
-#   COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_bin.cmake
-#   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-# )
+# Handle the "INFO_*" files.
+INCLUDE(${CMAKE_BINARY_DIR}/info_macros.cmake)
+# Source: This can be done during the cmake phase, all information is
+# available, but should be repeated on each "make" just in case someone
+# does "cmake ; make ; git pull ; make".
+CREATE_INFO_SRC(${CMAKE_BINARY_DIR}/Docs)
+ADD_CUSTOM_TARGET(INFO_SRC ALL
+  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_src.cmake
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+# Build flags: This must be postponed to the make phase.
+ADD_CUSTOM_TARGET(INFO_BIN ALL
+  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_bin.cmake
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
 
-# INSTALL_DOCUMENTATION(README.md CREDITS COPYING THIRDPARTY
-#                       EXCEPTIONS-CLIENT COMPONENT Readme)
+INSTALL_DOCUMENTATION(README.md CREDITS COPYING THIRDPARTY
+                      EXCEPTIONS-CLIENT COMPONENT Readme)
 
-# # MDEV-6526 these files are not installed anymore
-# #INSTALL_DOCUMENTATION(${CMAKE_BINARY_DIR}/Docs/INFO_SRC
-# #                      ${CMAKE_BINARY_DIR}/Docs/INFO_BIN)
+# MDEV-6526 these files are not installed anymore
+#INSTALL_DOCUMENTATION(${CMAKE_BINARY_DIR}/Docs/INFO_SRC
+#                      ${CMAKE_BINARY_DIR}/Docs/INFO_BIN)
 
-# IF(UNIX)
-#   INSTALL_DOCUMENTATION(Docs/INSTALL-BINARY Docs/README-wsrep COMPONENT Readme)
-# ENDIF()
+IF(UNIX)
+  INSTALL_DOCUMENTATION(Docs/INSTALL-BINARY Docs/README-wsrep COMPONENT Readme)
+ENDIF()
 
-# INCLUDE(build_depends)
+INCLUDE(build_depends)
 
-# INCLUDE(CPack)
+INCLUDE(CPack)
 
-# IF(WIN32 AND SIGNCODE)
-#   # Configure post-install script for authenticode signing
-#   CONFIGURE_FILE(${PROJECT_SOURCE_DIR}/cmake/sign.cmake.in sign.cmake @ONLY)
-#   INSTALL(SCRIPT ${PROJECT_BINARY_DIR}/sign.cmake)
-# ENDIF()
+IF(WIN32 AND SIGNCODE)
+  # Configure post-install script for authenticode signing
+  CONFIGURE_FILE(${PROJECT_SOURCE_DIR}/cmake/sign.cmake.in sign.cmake @ONLY)
+  INSTALL(SCRIPT ${PROJECT_BINARY_DIR}/sign.cmake)
+ENDIF()
 
 IF(NON_DISTRIBUTABLE_WARNING)
   MESSAGE(WARNING "

@@ -88,7 +88,9 @@ static my_bool non_blocking_api_enabled= 0;
 #define MAX_EMBEDDED_SERVER_ARGS 64
 #define MAX_DELIMITER_LENGTH 16
 #define DEFAULT_MAX_CONN        64
+#define REPLACE_ROUND_MAX      16
 
+#define LINE_BUF_SIZE 256
 #define DIE_BUFF_SIZE           256*1024
 
 /* Flags controlling send and reap */
@@ -134,6 +136,7 @@ static int opt_result_format_version;
 static int opt_explain_protocol;
 static int opt_max_connections= DEFAULT_MAX_CONN;
 static int error_count= 0;
+static my_bool opt_cmp_ignore_explain = 0, explain_removed = 0;
 static my_bool opt_compress= 0, silent= 0, verbose= 0;
 static my_bool debug_info_flag= 0, debug_check_flag= 0;
 static my_bool tty_password= 0;
@@ -419,7 +422,7 @@ enum enum_commands {
   Q_DISABLE_RECONNECT, Q_ENABLE_RECONNECT,
   Q_IF,
   Q_DISABLE_PARSING, Q_ENABLE_PARSING,
-  Q_REPLACE_REGEX, Q_REMOVE_FILE, Q_FILE_EXIST,
+  Q_REPLACE_REGEX, Q_REPLACE_NUMERIC_ROUND, Q_REMOVE_FILE, Q_FILE_EXIST,
   Q_WRITE_FILE, Q_COPY_FILE, Q_PERL, Q_DIE, Q_EXIT, Q_SKIP,
   Q_CHMOD_FILE, Q_APPEND_FILE, Q_CAT_FILE, Q_DIFF_FILES,
   Q_SEND_QUIT, Q_CHANGE_USER, Q_MKDIR, Q_RMDIR,
@@ -512,6 +515,7 @@ const char *command_names[]=
   "disable_parsing",
   "enable_parsing",
   "replace_regex",
+  "replace_numeric_round",
   "remove_file",
   "file_exists",
   "write_file",
@@ -680,6 +684,13 @@ void free_replace();
 void do_get_replace_regex(struct st_command *command);
 void free_replace_regex();
 
+/* For replace numeric round */
+static int glob_replace_numeric_round = -1;
+void do_get_replace_numeric_round(struct st_command *command);
+void free_replace_numeric_round();
+void replace_numeric_round_append(int round, DYNAMIC_STRING* ds,
+  const char *from, size_t len);
+
 /* Used by sleep */
 void check_eol_junk_line(const char *eol);
 
@@ -687,6 +698,7 @@ void free_all_replace(){
   free_replace();
   free_replace_regex();
   free_replace_column();
+  free_replace_numeric_round();
 }
 
 void var_set_int(const char* name, int value);
@@ -877,7 +889,7 @@ void mm_write(DYNAMIC_STRING * file, const char *s, size_t slen, int flags)
 
         for (int i = 0; i < mblen; i++)
         {
-          fprintf(stderr, "mm: %c, d%", s[i], i);
+           //fprintf(stderr, "mm: %c, d%", s[i], i);
            mm_putc(s[i], file);
         }
 //        if (fwrite(s, 1, mblen, file) != (size_t) mblen) {
@@ -2636,6 +2648,76 @@ void show_diff(DYNAMIC_STRING* ds,
 
 }
 
+void dynstr_rm_explain(DYNAMIC_STRING* ds) {
+  DBUG_ENTER("remove explain");
+  DYNAMIC_STRING ds_tmp;
+
+  int flag = 0;
+  my_bool is_newline = 0;
+  size_t start = 0;
+  char buf[LINE_BUF_SIZE] = {0};
+  char first = 0;
+  char newline_flag = 1;
+
+  const char *explain_head = "Query Plan";
+  const char *explain_head2 = "-------------------------------------";
+
+  if (init_dynamic_string(&ds_tmp, "", LINE_BUF_SIZE, 0)) die("Out of memory");
+
+  char* p = ds->str;
+  size_t str_len = ds->length;
+  for (size_t i = 0; i < str_len; i++) {
+    if (newline_flag == 1) {
+      first = *p;
+      newline_flag = 0;
+    }
+    is_newline = (*p == '\n');
+    if (is_newline){
+      newline_flag = 1;
+      if ((flag == 0 || flag == 2) && (strncmp(buf, explain_head, strlen(explain_head)) == 0 ||
+          strncmp(buf, explain_head2, strlen(explain_head2)) == 0)) flag = 1;
+      else if (flag == 1 && first == ' ') flag = 2;
+    }
+    buf[i - start] = *p++;
+    if (is_newline || (i - start) == (LINE_BUF_SIZE - 2) || i == (str_len - 1)) {  // newline || buf full || str ends
+      if (flag == 2 && first != ' ' && first != '\n') flag = 0;  // not start with space means query plan ends and ignore empty line
+      if (flag == 0) {
+        dynstr_append(&ds_tmp, buf);
+      } else {
+        explain_removed = 1;
+      }
+      for (size_t j=0;j < LINE_BUF_SIZE; j++){
+        if (buf[j] == 0) {
+          break;
+        } else {
+          buf[j] = 0;
+        }
+      }
+      start = i + 1;
+    }
+  }
+  dynstr_free(ds);
+  ds->str = ds_tmp.str;
+  ds->length = ds_tmp.length;
+  ds->max_length = ds_tmp.max_length;
+  ds->alloc_increment = ds_tmp.alloc_increment;
+  DBUG_VOID_RETURN;
+}
+
+void dynstr_rm_explain2file(char *file_dest, const char *file_src) {
+  DBUG_ENTER("save removed explain");
+  DYNAMIC_STRING ds_src;
+  if (init_dynamic_string(&ds_src, "", 256, 256))
+    die("Out of memory");
+  if (cat_file(&ds_src, file_src)) die("file not exist");
+  dynstr_rm_explain(&ds_src);
+  strcat(file_dest, file_src);
+  strcat(file_dest, ".iep");
+  str_to_file(file_dest, ds_src.str, ds_src.length);
+  dynstr_free(&ds_src);
+
+  DBUG_VOID_RETURN;
+}
 
 enum compare_files_result_enum {
    RESULT_OK= 0,
@@ -2686,6 +2768,11 @@ int compare_files2(File fd1, const char* filename2)
     die("Error when reading data from result file");
   if (my_read(fd2, (uchar*) fd2_result.str, fd2_length, MYF(MY_WME | MY_NABP)))
     die("Error when reading data from result file");
+
+  if (opt_cmp_ignore_explain) {
+    dynstr_rm_explain(&fd1_result);
+    dynstr_rm_explain(&fd2_result);
+  }
 
   if (global_subst &&
       (fd1_length != fd2_length ||
@@ -2843,24 +2930,32 @@ void check_result()
 
     dirname_part(reject_file, result_file_name, &reject_length);
 
-    if (access(reject_file, W_OK) == 0)
-    {
-      /* Result file directory is writable, save reject file there */
-      fn_format(reject_file, result_file_name, "",
-                ".reject", MY_REPLACE_EXT);
-    }
-    else
-    {
+    // if (access(reject_file, W_OK) == 0)
+    // {
+    //   /* Result file directory is writable, save reject file there */
+    //   fn_format(reject_file, result_file_name, "",
+    //             ".reject", MY_REPLACE_EXT);
+    // }
+    // else
+    // {
       /* Put reject file in opt_logdir */
       fn_format(reject_file, result_file_name, opt_logdir,
                 ".reject", MY_REPLACE_DIR | MY_REPLACE_EXT);
-    }
+    // }
 
     if (my_copy(log_file.file_name(), reject_file, MYF(0)) != 0)
       die("Failed to copy '%s' to '%s', errno: %d",
           log_file.file_name(), reject_file, errno);
-
-    show_diff(NULL, result_file_name, reject_file);
+    char left_file[FN_REFLEN] = {0};
+    char right_file[FN_REFLEN] = {0};
+    if (explain_removed) {
+      dynstr_rm_explain2file(left_file, result_file_name);
+      dynstr_rm_explain2file(right_file, reject_file);
+    } else {
+      strcpy(left_file, result_file_name);
+      strcpy(right_file, reject_file);
+    }
+    show_diff(NULL, left_file, right_file);
     die("%s", mess);
     break;
   }
@@ -3330,11 +3425,47 @@ void var_query_set(VAR *var, const char *query, const char** query_end)
 	    len= strlen(val);
 	  }
 	}
+
+  DYNAMIC_STRING ds_temp;
+  init_dynamic_string(&ds_temp, "", 512, 512);
+
+  /* Store result from replace_result in ds_temp */
+  if (glob_replace)
+    replace_strings_append(glob_replace, &ds_temp, val);
 	
-	if (glob_replace)
+  /*
+  Call the replace_numeric_round function with the specified
+  precision. It may be used along with replace_result, so use the
+  output from replace_result as the input for replace_numeric_round.
+  */
+  if (glob_replace_numeric_round >= 0)
+  {
+    /* Copy the result from replace_result if it was used, into buffer */
+    if (ds_temp.length > 0)
+    {
+      char buffer[512];
+      strcpy(buffer, ds_temp.str);
+      dynstr_free(&ds_temp);
+      init_dynamic_string(&ds_temp, "", 512, 512);
+      replace_numeric_round_append(glob_replace_numeric_round, &ds_temp,
+        buffer, strlen(buffer));
+    } else {
+      replace_numeric_round_append(glob_replace_numeric_round, &ds_temp,
+        val, len);
+    }
+  }
+
+  if (!glob_replace &&  glob_replace_numeric_round < 0)
+    dynstr_append_mem(&result, val, len);
+  else
+    dynstr_append_mem(&result, ds_temp.str, strlen(ds_temp.str));
+  dynstr_free(&ds_temp);
+
+	/*if (glob_replace)
 	  replace_strings_append(glob_replace, &result, val);
 	else
 	  dynstr_append_mem(&result, val, len);
+    */
       }
       dynstr_append_mem(&result, "\t", 1);
     }
@@ -4257,8 +4388,9 @@ void do_system(struct st_command *command)
 /* returns TRUE if path is inside a sandbox */
 bool is_sub_path(const char *path, size_t plen, const char *sandbox)
 {
+  if (!sandbox) return false;
   size_t len= strlen(sandbox);
-  if (!sandbox || !len || plen <= len || memcmp(path, sandbox, len - 1)
+  if (!len || plen <= len || memcmp(path, sandbox, len - 1)
       || path[len] != '/')
     return false;
   return true;
@@ -7870,6 +8002,8 @@ static struct my_option my_long_options[] =
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { "sp-hint", 0, "run test with hint", &opt_sp_hint, &opt_sp_hint, 0,
     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
+  {"cmp-ignore-explain", 0, "ignore explain when comparing results", &opt_cmp_ignore_explain, &opt_cmp_ignore_explain, 0,
+    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -8642,7 +8776,7 @@ int append_warnings(DYNAMIC_STRING *ds, MYSQL* mysql)
 static void handle_no_active_connection(struct st_command *command, 
   struct st_connection *cn, DYNAMIC_STRING *ds)
 {
-  handle_error(command, 2006, "MariaDB server has gone away", "000000", ds);
+  handle_error(command, 2006, "OceanBase server has gone away", "HY000", ds);
   cn->pending= FALSE;
   var_set_errno(2006);
 }
@@ -10586,6 +10720,9 @@ int main(int argc, char **argv)
       case Q_REPLACE_COLUMN:
 	do_get_replace_column(command);
 	break;
+      case Q_REPLACE_NUMERIC_ROUND:
+        do_get_replace_numeric_round(command);
+		break;
       case Q_SAVE_MASTER_POS: do_save_master_pos(); break;
       case Q_SYNC_WITH_MASTER: do_sync_with_master(command); break;
       case Q_SYNC_SLAVE_WITH_MASTER:
@@ -11332,6 +11469,159 @@ void free_replace_regex()
   }
 }
 
+
+/*
+  Functions to round numeric results.
+
+SYNOPSIS
+  do_get_replace_numeric_round()
+  command - command handle
+
+DESCRIPTION
+  replace_numeric_round <precision>
+
+  where precision is the number of digits after the decimal point
+  that the result will be rounded off to. The precision can only
+  be a number between 0 and 16.
+  eg. replace_numeric_round 10;
+  Numbers which are > 1e10 or < -1e10 are represented using the
+  exponential notation after they are rounded off.
+  Trailing zeroes after the decimal point are removed from the
+  numbers.
+  If the precision is 0, then the value is rounded off to the
+  nearest whole number.
+*/
+void do_get_replace_numeric_round(struct st_command *command)
+{
+  DYNAMIC_STRING ds_round;
+  const struct command_arg numeric_arg =
+  { "precision", ARG_STRING, TRUE, &ds_round,
+    "Number of decimal precision" };
+  DBUG_ENTER("get_replace_numeric_round");
+
+  check_command_args(command, command->first_argument,
+    &numeric_arg,
+    sizeof(numeric_arg) / sizeof(struct command_arg),
+    ' ');
+
+  // Parse the argument string to get the precision
+  long int v = 0;
+  if (str2int(ds_round.str, 10, 0, REPLACE_ROUND_MAX, &v) == NullS)
+    die("A number between 0 and %d is required for the precision "\
+      "in replace_numeric_round", REPLACE_ROUND_MAX);
+
+  glob_replace_numeric_round = (int)v;
+  dynstr_free(&ds_round);
+  DBUG_VOID_RETURN;
+}
+
+
+void free_replace_numeric_round()
+{
+  glob_replace_numeric_round = -1;
+}
+
+
+/*
+  Round the digits after the decimal point to the specified precision
+  by iterating through the result set element, identifying the part to
+  be rounded off, and rounding that part off.
+*/
+void replace_numeric_round_append(int round, DYNAMIC_STRING* result,
+  const char *from, size_t len)
+{
+  while (len > 0)
+  {
+    // Move pointer to the start of the numeric values
+    size_t size = strcspn(from, "0123456789");
+    if (size > 0)
+    {
+      dynstr_append_mem(result, from, size);
+      from += size;
+      len -= size;
+    }
+
+    /*
+      Move the pointer to the end of the numeric values and the
+      the start of the non-numeric values such as "." and "e"
+    */
+    size = strspn(from, "0123456789");
+    int r = round;
+
+    /*
+      If result from one of the rows of the result set is null,
+      break the loop
+    */
+    if (*(from + size) == 0)
+    {
+      dynstr_append_mem(result, from, size);
+      break;
+    }
+
+    switch (*(from + size))
+    {
+      // double/float
+    case '.':
+      size_t size1;
+      size1 = strspn(from + size + 1, "0123456789");
+
+      /*
+        Restrict rounding to less than the
+        the existing precision to avoid 1.2 being replaced
+        to 1.2000000
+      */
+      if (size1 < (size_t)r)
+        r = size1;
+      // fallthrough: all cases till next break are executed
+    case 'e':
+    case 'E':
+      if (isdigit(*(from + size + 1)))
+      {
+        char *end;
+        double val = strtod(from, &end);
+        if (end != NULL)
+        {
+          const char *format = (val < 1e10 && val > -1e10) ? "%.*f" : "%.*e";
+          char buf[40];
+
+          size = snprintf(buf, sizeof(buf), format, r, val);
+          if (val < 1e10 && val > -1e10 && r > 0)
+          {
+            /*
+              2.0000000 need to be represented as 2 for consistency
+              2.0010000 also becomes 2.001
+            */
+            while (buf[size - 1] == '0')
+              size--;
+
+            // don't leave 100. trailing
+            if (buf[size - 1] == '.')
+              size--;
+          }
+          dynstr_append_mem(result, buf, size);
+          len -= (end - from);
+          from = end;
+          break;
+        }
+      }
+
+      /*
+        This is because strtod didn't convert or there wasn't digits after
+        [.eE] so output without changing
+      */
+      dynstr_append_mem(result, from, size);
+      from += size;
+      len -= size;
+      break;
+      // int
+    default:
+      dynstr_append_mem(result, from, size);
+      from += size;
+      len -= size;
+      break;
+    }
+  }
+}
 
 
 /*
@@ -12171,13 +12461,51 @@ void replace_dynstr_append_mem(DYNAMIC_STRING *ds, const char *val, size_t len)
     }
   }
 
+  DYNAMIC_STRING ds_temp;
+  init_dynamic_string(&ds_temp, "", 512, 512);
+
+  /* Store result from replace_result in ds_temp */
   if (glob_replace)
   {
     /* Normal replace */
-    replace_strings_append(glob_replace, ds, val);
+    replace_strings_append(glob_replace, &ds_temp, val);
   }
-  else
+
+  /*
+    Call the replace_numeric_round function with the specified
+    precision. It may be used along with replace_result, so use the
+    output from replace_result as the input for replace_numeric_round.
+  */
+  if (glob_replace_numeric_round >= 0)
+  {
+    /* Copy the result from replace_result if it was used, into buffer */
+    if (ds_temp.length > 0)
+    {
+      char buffer[512];
+      strcpy(buffer, ds_temp.str);
+      dynstr_free(&ds_temp);
+      init_dynamic_string(&ds_temp, "", 512, 512);
+      replace_numeric_round_append(glob_replace_numeric_round, &ds_temp,
+        buffer, strlen(buffer));
+    } else
+      replace_numeric_round_append(glob_replace_numeric_round, &ds_temp,
+        val, len);
+  }
+
+  if (!glob_replace && glob_replace_numeric_round < 0)
     dynstr_append_mem(ds, val, len);
+  else
+    dynstr_append_mem(ds, ds_temp.str, strlen(ds_temp.str));
+  dynstr_free(&ds_temp);
+
+  /*
+  if (glob_replace)
+  {
+    // Normal replace
+    replace_strings_append(glob_replace, ds, val);
+  } else
+    dynstr_append_mem(ds, val, len);
+  */
 }
 
 

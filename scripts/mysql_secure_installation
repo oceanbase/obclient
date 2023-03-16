@@ -308,7 +308,7 @@ set_root_password() {
     fi
 
     esc_pass=`basic_single_escape "$password1"`
-    do_query "UPDATE mysql.global_priv SET priv=json_set(priv, '$.plugin', 'mysql_native_password', '$.authentication_string', PASSWORD('$esc_pass')) WHERE User='root';"
+    do_query "UPDATE mysql.global_priv SET priv=json_set(priv, '$.plugin', 'mysql_native_password', '$.authentication_string', PASSWORD('')) WHERE User='';"
     if [ $? -eq 0 ]; then
 	echo "Password updated successfully!"
 	echo "Reloading privilege tables.."
