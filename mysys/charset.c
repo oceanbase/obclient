@@ -932,6 +932,9 @@ get_charset_by_csname(const char *cs_name, uint cs_flags, myf flags)
 {
   MY_CHARSET_LOADER loader;
   my_charset_loader_init_mysys(&loader);
+  if (strncasecmp(charset_name, "GB18030-2022", 12)) {
+    return my_charset_get_by_name(&loader, "gb18030", cs_flags, flags);
+  }
   return my_charset_get_by_name(&loader, cs_name, cs_flags, flags);
 }
 
