@@ -1199,9 +1199,9 @@ print_table_data(DYNAMIC_STRING *ds,
       visible_length= charset_info->cset->numcells(charset_info, buffer, buffer + data_length);
       extra_padding= (uint) (data_length - visible_length);
 //      fprintf(stderr, "print_table_data, %d, %d, %d, %d ", opt_binhex, is_binary_field(field), field_max_length, MAX_COLUMN_LENGTH);
-      if (mysql->oracle_mode && is_binary_field_oracle(field))
+      if (mysql->oracle_mode && cur[off]&& is_binary_field_oracle(field))
         print_as_hex_oracle(ds_sorted, cur[off], lengths[off], field_max_length);
-      else if (opt_binhex && is_binary_field(field))
+      else if (opt_binhex && cur[off]&& is_binary_field(field))
         print_as_hex(ds_sorted, cur[off], lengths[off], field_max_length);
       else if (field_max_length > MAX_COLUMN_LENGTH)
          mm_print_sized_data(ds_sorted, buffer, data_length, MAX_COLUMN_LENGTH+extra_padding, FALSE);
@@ -1228,7 +1228,7 @@ void print_result_to_buf(DYNAMIC_STRING *ds,
                          MYSQL *mysql)
 {
   char         buff[200]; /* about 110 chars used so far */
-  char         time_buff[52+3+1]; /* time max + space&parens + NUL */
+  // char         time_buff[52+3+1]; /* time max + space&parens + NUL */
   ulong warnings = 0;
   //do
   {
@@ -1236,7 +1236,6 @@ void print_result_to_buf(DYNAMIC_STRING *ds,
     bool batchmode= false;//(status.batch && verbose <= 1) ? TRUE : FALSE;
     buff[0]= 0;
     bool quick = true;
-    uint               error= 0;
 
 
     /* Every branch must truncate  buff . */
@@ -1795,6 +1794,9 @@ static void show_warnings_before_error(MYSQL* mysql)
   DBUG_ENTER("show_warnings_before_error");
 
   if (!mysql)
+    DBUG_VOID_RETURN;
+  
+  if (mysql->oracle_mode)
     DBUG_VOID_RETURN;
 
   if (mysql_query(mysql, query))
@@ -4475,9 +4477,7 @@ void do_remove_file(struct st_command *command)
                      rm_args, sizeof(rm_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_filename.str))
-    DBUG_VOID_RETURN;
-
+  
   DBUG_PRINT("info", ("removing file: %s", ds_filename.str));
   error= my_delete(ds_filename.str, MYF(disable_warnings ? 0 : MY_WME)) != 0;
   handle_command_error(command, error, my_errno);
@@ -4521,8 +4521,6 @@ void do_remove_files_wildcard(struct st_command *command)
                      ' ');
   fn_format(dirname, ds_directory.str, "", "", MY_UNPACK_FILENAME);
 
-  if (bad_path(ds_directory.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("listing directory: %s", dirname));
   if (!(dir_info= my_dir(dirname, MYF(MY_DONT_SORT | MY_WANT_STAT | MY_WME))))
@@ -4598,8 +4596,6 @@ void do_copy_file(struct st_command *command)
                      sizeof(copy_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_to_file.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("Copy %s to %s", ds_from_file.str, ds_to_file.str));
   /* MY_HOLD_ORIGINAL_MODES prevents attempts to chown the file */
@@ -4638,8 +4634,6 @@ void do_move_file(struct st_command *command)
                      sizeof(move_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_to_file.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("Move %s to %s", ds_from_file.str, ds_to_file.str));
   error= (my_rename(ds_from_file.str, ds_to_file.str,
@@ -4679,8 +4673,6 @@ void do_chmod_file(struct st_command *command)
                      sizeof(chmod_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_file.str))
-    DBUG_VOID_RETURN;
 
   /* Parse what mode to set */
   if (ds_mode.length != 4 ||
@@ -4753,8 +4745,6 @@ void do_mkdir(struct st_command *command)
                      mkdir_args, sizeof(mkdir_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_dirname.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("creating directory: %s", ds_dirname.str));
   error= my_mkdir(ds_dirname.str, 0777, MYF(MY_WME)) != 0;
@@ -4787,8 +4777,6 @@ void do_rmdir(struct st_command *command)
                      rmdir_args, sizeof(rmdir_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_dirname.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("removing directory: %s", ds_dirname.str));
   if (my_rmtree(ds_dirname.str, MYF(0)))
@@ -4906,8 +4894,6 @@ static void do_list_files_write_file_command(struct st_command *command,
                      list_files_args,
                      sizeof(list_files_args)/sizeof(struct command_arg), ' ');
 
-  if (bad_path(ds_filename.str))
-    DBUG_VOID_RETURN;
 
   init_dynamic_string(&ds_content, "", 1024, 1024);
   error= get_list_files(&ds_content, &ds_dirname, &ds_wild);
@@ -5012,8 +4998,6 @@ void do_write_file_command(struct st_command *command, my_bool append)
                      sizeof(write_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_filename.str))
-    DBUG_VOID_RETURN;
 
   if (!append && access(ds_filename.str, F_OK) == 0)
   {
@@ -6784,8 +6768,6 @@ void do_connect(struct st_command *command)
     if (!(con_slot= find_connection_by_name("-closed_connection-")))
       die("Connection limit exhausted, you can have max %d connections",
           opt_max_connections);
-    my_free(con_slot->name);
-    con_slot->name= 0;
   }
 
   init_connection_thd(con_slot);
@@ -6802,6 +6784,9 @@ void do_connect(struct st_command *command)
 #endif
   if (opt_compress || con_compress)
     mysql_options(con_slot->mysql, MYSQL_OPT_COMPRESS, NullS);
+  if (csname && strncasecmp(csname, "GB18030-2022", 12) == 0) {
+    csname = (char*)"GB18030";
+  }
   mysql_options(con_slot->mysql, MYSQL_SET_CHARSET_NAME,
                 csname?csname: charset_info->csname);
   if (opt_charsets_dir)
@@ -8743,24 +8728,23 @@ int append_warnings(DYNAMIC_STRING *ds, MYSQL* mysql)
   */
   DBUG_ASSERT(!mysql_more_results(mysql));
 
-  if (mysql_real_query(mysql, "SHOW WARNINGS", 13))
-    die("Error running query \"SHOW WARNINGS\": %s", mysql_error(mysql));
-
-  if (!(warn_res= mysql_store_result(mysql)))
-    die("Warning count is %u but didn't get any warnings",
-	count);
-
   init_dynamic_string(&res, "", 1024, 1024);
 
-  append_result(&res, warn_res);
-  mysql_free_result(warn_res);
+  if (!mysql->oracle_mode) 
+  {
+    if (mysql_real_query(mysql, "SHOW WARNINGS", 13))
+      die("Error running query \"SHOW WARNINGS\": %s", mysql_error(mysql));
+
+    if (!(warn_res = mysql_store_result(mysql)))
+      die("Warning count is %u but didn't get any warnings", count);
+
+    append_result(&res, warn_res);
+    mysql_free_result(warn_res);
+  }
 
   DBUG_PRINT("warnings", ("%s", res.str));
 
-  if (display_result_sorted)
-    dynstr_append_sorted(ds, &res, 0);
-  else
-    dynstr_append_mem(ds, res.str, res.length);
+  dynstr_append_mem(ds, res.str, res.length);
   dynstr_free(&res);
   DBUG_RETURN(count);
 }
@@ -11224,15 +11208,6 @@ struct st_regex
 int reg_replace(char** buf_p, int* buf_len_p, char *pattern, char *replace,
                 char *string, int icase);
 
-bool is_reg_valid(char last_start_re, char start_re){
-  if (start_re == last_start_re || 
-    start_re == '(' || start_re == '[' || start_re == '{' || start_re == '<'){
-    return true;
-  } else {
-    return false;
-  }
-}
-
 bool parse_re_part(char *start_re, char *end_re,
                    char **p, char *end, char **buf)
 {
@@ -11360,10 +11335,9 @@ void append_replace_regex(char* expr, char *expr_end, struct st_replace_regex* r
 
     //skip get_ddl_oracle.test
     while (p < expr_end){
-      if (is_reg_valid(start_re, *p))
+      if (*p == '/')
         break;
-      else
-        p++;
+      p++;
     }
   }
 

@@ -4728,9 +4728,9 @@ print_table_data(MYSQL_RES *result)
         //tee_print_sized_data(obclient_num_array, strlen(obclient_num_array), field_max_length+extra_padding, FALSE);
         
       }
-      else if (mysql.oracle_mode && is_binary_field_oracle(field))
+      else if (mysql.oracle_mode && cur[off] && is_binary_field_oracle(field))
         print_as_hex_oracle(PAGER, cur[off], lengths[off], field_max_length);
-      else if (opt_binhex && is_binary_field(field))
+      else if (opt_binhex && cur[off] && is_binary_field(field))
         print_as_hex(PAGER, cur[off], lengths[off], field_max_length);
       else if (field_max_length > MAX_COLUMN_LENGTH)
         tee_print_sized_data(buffer, data_length, MAX_COLUMN_LENGTH+extra_padding, FALSE);
@@ -5943,6 +5943,9 @@ sql_real_connect(char *host,char *database,char *user,char *password,
   }
   if (!strcmp(default_charset,MYSQL_AUTODETECT_CHARSET_NAME))
     default_charset= (char *)my_default_csname();
+  if (strncasecmp(default_charset, "GB18030-2022", 12) == 0) {
+    default_charset = (char*)"GB18030";
+  }
   mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, default_charset);
 
   my_bool can_handle_expired= opt_connect_expired_password || !status.batch;
@@ -6700,12 +6703,12 @@ static void report_progress_end()
 static my_bool prompt_cmd_oracle(const char *str, char **text) {
   my_bool rst = 0;
   char *p = (char*)str;
-  char *start = NULL, *end = NULL;
+  char *start = NULL;
   int len = 0;
-
+ 
   while (my_isspace(charset_info, *p))
     p++;
-
+ 
   start = p;
   while (*p != '\0' && !my_isspace(charset_info, *p))
     p++;
@@ -6713,11 +6716,11 @@ static my_bool prompt_cmd_oracle(const char *str, char **text) {
   if (strncasecmp("prompt", start, len ) != 0 || len<3){
     return rst;
   }
-
+ 
   rst = 1;
   while (my_isspace(charset_info, *p))
     p++;
-
+ 
   *text = p;
   return rst;
 }
