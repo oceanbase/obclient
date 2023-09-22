@@ -2379,8 +2379,30 @@ ER_TABLE_NOT_LOCKED
         spa "Tabla '%-.192s' no fue trabada con LOCK TABLES"
         swe "Tabell '%-.192s' är inte låst med LOCK TABLES"
         ukr "Таблицю '%-.192s' не було блоковано з LOCK TABLES"
-ER_UNUSED_17
-        eng "You should never see it"
+ER_BLOB_CANT_HAVE_DEFAULT 42000 
+        cze "Blob položka '%-.192s' nemůže mít defaultní hodnotu"
+        dan "BLOB feltet '%-.192s' kan ikke have en standard værdi"
+        nla "Blob veld '%-.192s' can geen standaardwaarde bevatten"
+        eng "BLOB, TEXT, GEOMETRY or JSON column '%-.192s' can't have a default value"
+        est "BLOB-tüüpi tulp '%-.192s' ei saa omada vaikeväärtust"
+        fre "BLOB '%-.192s' ne peut avoir de valeur par défaut"
+        ger "BLOB/TEXT-Feld '%-.192s' darf keinen Vorgabewert (DEFAULT) haben"
+        greek "Τα Blob πεδία '%-.192s' δεν μπορούν να έχουν προκαθορισμένες τιμές (default value)"
+        hun "A(z) '%-.192s' blob objektumnak nem lehet alapertelmezett erteke"
+        ita "Il campo BLOB '%-.192s' non puo` avere un valore di default"
+        jpn "BLOB/TEXT 列 '%-.192s' にはデフォルト値を指定できません。"
+        kor "BLOB 칼럼 '%-.192s' 는 디폴트 값을 가질 수 없습니다."
+        nor "Blob feltet '%-.192s' kan ikke ha en standard verdi"
+        norwegian-ny "Blob feltet '%-.192s' kan ikkje ha ein standard verdi"
+        pol "Pole typu blob '%-.192s' nie może mieć domy?lnej warto?ci"
+        por "Coluna BLOB '%-.192s' não pode ter um valor padrão (default)"
+        rum "Coloana BLOB '%-.192s' nu poate avea o valoare default"
+        rus "Невозможно указывать значение по умолчанию для столбца BLOB '%-.192s'"
+        serbian "BLOB kolona '%-.192s' ne može imati default vrednost"
+        slo "Pole BLOB '%-.192s' nemôže mať implicitnú hodnotu"
+        spa "Campo Blob '%-.192s' no puede tener valores patron"
+        swe "BLOB fält '%-.192s' kan inte ha ett DEFAULT-värde"
+        ukr "Стовбець BLOB '%-.192s' не може мати значення по замовчуванню" 
 ER_WRONG_DB_NAME 42000 
         cze "Nepřípustné jméno databáze '%-.100T'"
         dan "Ugyldigt database navn '%-.100T'"
@@ -7850,6 +7872,216 @@ ER_JSON_DOCUMENT_TOO_DEEP 22032
 
 ER_JSON_DOCUMENT_NULL_KEY 22032
   eng "JSON documents may not contain NULL member names."
+
+ER_SECURE_TRANSPORT_REQUIRED
+  eng "Connections using insecure transport are prohibited while --require_secure_transport=ON."
+
+ER_NO_SECURE_TRANSPORTS_CONFIGURED
+  eng "No secure transports (SSL or Shared Memory) are configured, unable to set --require_secure_transport=ON."
+
+ER_DISABLED_STORAGE_ENGINE
+  eng "Storage engine %s is disabled (Table creation is disallowed)."
+
+ER_USER_DOES_NOT_EXIST
+  eng "User %s does not exist."
+
+ER_USER_ALREADY_EXISTS
+  eng "User %s already exists."
+
+ER_AUDIT_API_ABORT
+  eng "Aborted by Audit API ('%-.48s';%d)."
+
+ER_INVALID_JSON_PATH_ARRAY_CELL 42000
+  eng "A path expression is not a path to a cell in an array."
+
+ER_BUFPOOL_RESIZE_INPROGRESS
+  eng "Another buffer pool resize is already in progress."
+
+ER_FEATURE_DISABLED_SEE_DOC
+  eng "The '%s' feature is disabled; see the documentation for '%s'"
+
+ER_SERVER_ISNT_AVAILABLE
+  eng "Server isn't available"
+
+ER_SESSION_WAS_KILLED
+  eng "Session was killed"
+
+ER_CAPACITY_EXCEEDED
+  eng "Memory capacity of %llu bytes for '%s' exceeded. %s"
+
+ER_CAPACITY_EXCEEDED_IN_RANGE_OPTIMIZER
+  eng "Range optimization was not done for this query."
+
+ER_TABLE_NEEDS_UPG_PART
+  eng "Partitioning upgrade required. Please dump/reload to fix it or do: ALTER TABLE `%-.192s`.`%-.192s` UPGRADE PARTITIONING"
+
+ER_CANT_WAIT_FOR_EXECUTED_GTID_SET_WHILE_OWNING_A_GTID
+  eng "The client holds ownership of the GTID %s. Therefore, WAIT_FOR_EXECUTED_GTID_SET cannot wait for this GTID."
+
+ER_CANNOT_ADD_FOREIGN_BASE_COL_VIRTUAL
+  eng "Cannot add foreign key on the base column of indexed virtual column."
+
+ER_CANNOT_CREATE_VIRTUAL_INDEX_CONSTRAINT
+  eng "Cannot create index on virtual column whose base column has foreign constraint."
+
+ER_ERROR_ON_MODIFYING_GTID_EXECUTED_TABLE
+  eng "Please do not modify the %s table with an XA transaction. This is an internal system table used to store GTIDs for committed transactions. Although modifying it can lead to an inconsistent GTID state, if neccessary you can modify it with a non-XA transaction."
+
+ER_LOCK_REFUSED_BY_ENGINE
+  eng "Lock acquisition refused by storage engine."
+
+ER_UNSUPPORTED_ALTER_ONLINE_ON_VIRTUAL_COLUMN
+  eng "ADD COLUMN col...VIRTUAL, ADD INDEX(col)"
+
+ER_MASTER_KEY_ROTATION_NOT_SUPPORTED_BY_SE
+  eng "Master key rotation is not supported by storage engine."
+
+ER_MASTER_KEY_ROTATION_ERROR_BY_SE
+  eng "Encryption key rotation error reported by SE: %s"
+
+ER_MASTER_KEY_ROTATION_BINLOG_FAILED
+  eng "Write to binlog failed. However, master key rotation has been completed successfully."
+
+ER_MASTER_KEY_ROTATION_SE_UNAVAILABLE
+  eng "Storage engine is not available."
+
+ER_TABLESPACE_CANNOT_ENCRYPT
+  eng "This tablespace can't be encrypted."
+
+ER_INVALID_ENCRYPTION_OPTION
+  eng "Invalid encryption option."
+
+ER_CANNOT_FIND_KEY_IN_KEYRING
+  eng "Can't find master key from keyring, please check in the server log if a keyring plugin is loaded and initialized successfully."
+
+ER_CAPACITY_EXCEEDED_IN_PARSER
+  eng "Parser bailed out for this query."
+
+ER_UNSUPPORTED_ALTER_ENCRYPTION_INPLACE
+  eng "Cannot alter encryption attribute by inplace algorithm."
+
+ER_KEYRING_UDF_KEYRING_SERVICE_ERROR
+  eng "Function '%s' failed because underlying keyring service returned an error. Please check if a keyring plugin is installed and that provided arguments are valid for the keyring you are using."
+
+ER_USER_COLUMN_OLD_LENGTH
+  eng "It seems that your db schema is old. The %s column is 77 characters long and should be 93 characters long. Please run mysql_upgrade."
+
+ER_CANT_RESET_MASTER
+  eng "RESET MASTER is not allowed because %-.384s."
+
+ER_GROUP_REPLICATION_MAX_GROUP_SIZE
+  eng "The START GROUP_REPLICATION command failed since the group already has 9 members."
+
+ER_CANNOT_ADD_FOREIGN_BASE_COL_STORED
+  eng "Cannot add foreign key on the base column of stored column. "
+
+ER_TABLE_REFERENCED
+  eng "Cannot complete the operation because table is referenced by another connection."
+
+ER_PARTITION_ENGINE_DEPRECATED_FOR_TABLE
+  eng "The partition engine, used by table '%-.192s.%-.192s', is deprecated and will be removed in a future release. Please use native partitioning instead."
+
+ER_WARN_USING_GEOMFROMWKB_TO_SET_SRID_ZERO 01000
+  eng "%.192s(geometry) is deprecated and will be replaced by st_srid(geometry, 0) in a future version. Use %.192s(st_aswkb(geometry), 0) instead."
+
+ER_WARN_USING_GEOMFROMWKB_TO_SET_SRID 01000
+  eng "%.192s(geometry, srid) is deprecated and will be replaced by st_srid(geometry, srid) in a future version. Use %.192s(st_aswkb(geometry), srid) instead."
+
+ER_XA_RETRY
+  eng "The resource manager is not able to commit the transaction branch at this time. Please retry later."
+
+ER_KEYRING_AWS_UDF_AWS_KMS_ERROR
+  eng "Function %s failed due to: %s."
+
+ER_BINLOG_UNSAFE_XA
+  eng "Statement is unsafe because it is being used inside a XA transaction. Concurrent XA transactions may deadlock on slaves when replicated using statements."
+
+ER_UDF_ERROR
+  eng "%s UDF failed; %s"
+
+ER_KEYRING_MIGRATION_FAILURE
+  eng "Can not perform keyring migration : %s"
+
+ER_KEYRING_ACCESS_DENIED_ERROR 42000
+  eng "Access denied; you need %-.128s privileges for this operation"a
+
+ER_KEYRING_MIGRATION_STATUS
+  eng "Keyring migration %s."
+
+ER_PLUGIN_FAILED_TO_OPEN_TABLES
+  eng "Failed to open the %s filter tables."
+
+ER_PLUGIN_FAILED_TO_OPEN_TABLE
+  eng "Failed to open '%s.%s' %s table."
+
+ER_AUDIT_LOG_NO_KEYRING_PLUGIN_INSTALLED
+  eng "No keyring plugin installed."
+
+ER_AUDIT_LOG_ENCRYPTION_PASSWORD_HAS_NOT_BEEN_SET
+  eng "Audit log encryption password has not been set; it will be generated automatically. Use audit_log_encryption_password_get to obtain the password or audit_log_encryption_password_set to set a new one."
+
+ER_AUDIT_LOG_COULD_NOT_CREATE_AES_KEY
+  eng "Could not create AES key. OpenSSL's EVP_BytesToKey function failed."
+
+ER_AUDIT_LOG_ENCRYPTION_PASSWORD_CANNOT_BE_FETCHED
+  eng "Audit log encryption password cannot be fetched from the keyring. Password used so far is used for encryption."
+
+ER_AUDIT_LOG_JSON_FILTERING_NOT_ENABLED
+  eng "Audit Log filtering has not been installed."
+
+ER_AUDIT_LOG_UDF_INSUFFICIENT_PRIVILEGE
+  eng "Request ignored for '%s'@'%s'. SUPER_ACL needed to perform operation"
+
+ER_AUDIT_LOG_SUPER_PRIVILEGE_REQUIRED
+  eng "SUPER privilege required for '%s'@'%s' user."
+
+ER_COULD_NOT_REINITIALIZE_AUDIT_LOG_FILTERS
+  eng "Could not reinitialize audit log filters."
+
+ER_AUDIT_LOG_UDF_INVALID_ARGUMENT_TYPE
+  eng "Invalid argument type"
+
+ER_AUDIT_LOG_UDF_INVALID_ARGUMENT_COUNT
+  eng "Invalid argument count"
+
+ER_AUDIT_LOG_HAS_NOT_BEEN_INSTALLED
+  eng "audit_log plugin has not been installed using INSTALL PLUGIN syntax."
+
+ER_AUDIT_LOG_UDF_READ_INVALID_MAX_ARRAY_LENGTH_ARG_TYPE
+  eng "Invalid \"max_array_length\" argument type."
+
+ER_AUDIT_LOG_UDF_READ_INVALID_MAX_ARRAY_LENGTH_ARG_VALUE
+  eng "Invalid \"max_array_length\" argument value."
+
+ER_AUDIT_LOG_JSON_FILTER_PARSING_ERROR
+  eng "%s"
+
+ER_AUDIT_LOG_JSON_FILTER_NAME_CANNOT_BE_EMPTY
+  eng "Filter name cannot be empty."
+
+ER_AUDIT_LOG_JSON_USER_NAME_CANNOT_BE_EMPTY
+  eng "User cannot be empty."
+
+ER_AUDIT_LOG_JSON_FILTER_DOES_NOT_EXISTS
+  eng "Specified filter has not been found."
+
+ER_AUDIT_LOG_USER_FIRST_CHARACTER_MUST_BE_ALPHANUMERIC
+  eng "First character of the user name must be alphanumeric."
+
+ER_AUDIT_LOG_USER_NAME_INVALID_CHARACTER
+  eng "Invalid character in the user name."
+
+ER_AUDIT_LOG_HOST_NAME_INVALID_CHARACTER
+  eng "Invalid character in the host name."
+
+WARN_DEPRECATED_MAXDB_SQL_MODE_FOR_TIMESTAMP
+  eng "With the MAXDB SQL mode enabled, TIMESTAMP is identical with DATETIME. The MAXDB SQL mode is deprecated and will be removed in a future release. Please disable the MAXDB SQL mode and use DATETIME instead."
+
+ER_XA_REPLICATION_FILTERS
+  eng "The use of replication filters with XA transactions is not supported, and can lead to an undefined state in the replication slave."
+
+ER_CANT_OPEN_ERROR_LOG
+  eng "Could not open file '%s' for error logging%s%s"
 
 # MariaDB extra error numbers starts from 4000
 skip-to-error-number 4000

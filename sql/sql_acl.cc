@@ -957,8 +957,8 @@ class User_table_tabular: public User_table
         {
           if (*as && strcmp(as, pw))
           {
-            sql_print_warning("'user' entry '%s@%s' has both a password and an "
-              "authentication plugin specified. The password will be ignored.",
+            sql_print_warning("'user' entry '%s@%s' "
+              "has both a passwor d and an authentication plugin specified. The password will be ignored.",
               safe_str(get_user(thd->mem_root)), safe_str(get_host(thd->mem_root)));
           }
           else

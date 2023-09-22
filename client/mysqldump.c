@@ -1849,6 +1849,10 @@ static int connect_to_db(char *host, char *user,char *passwd)
 #endif
   if (opt_protocol)
     mysql_options(&mysql_connection,MYSQL_OPT_PROTOCOL,(char*)&opt_protocol);
+
+  if (strncasecmp(default_charset, "GB18030-2022", 12) == 0) {
+    default_charset = (char*)"GB18030";
+  }
   mysql_options(&mysql_connection, MYSQL_SET_CHARSET_NAME, default_charset);
 
   if (opt_plugin_dir && *opt_plugin_dir)

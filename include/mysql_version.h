@@ -33,7 +33,7 @@
 #define MYSQL_UNIX_ADDR                 MARIADB_UNIX_ADDR
 
 #ifdef WITH_WSREP
-#define WSREP_PATCH_VERSION             "wsrep_26.22"
+#define WSREP_PATCH_VERSION             ""
 #endif
 
 /* mysqld compile time options */

@@ -6,10 +6,9 @@
 #
 # Edit parameters below to specify the address and login to server.
 
-USER=
-PSWD=
-HOST=
-PORT=
+
+HOST=127.0.0.1
+PORT=3306
 
 SCHEMA="wsrep"
 MEMB_TABLE="$SCHEMA.membership"

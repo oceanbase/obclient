@@ -32,7 +32,6 @@ mkdir -p ${TMP_DIR}/SOURCES
 mkdir -p ${TMP_DIR}/SRPMS
 mkdir -p $BOOST_DIR
 
-#cp ./boost_1_59_0.tar.gz $BOOST_DIR
 SPEC_FILE=${PACKAGE}.spec
 
 echo "[BUILD] make rpms...dep_dir=$DEP_DIR spec_file=${SPEC_FILE}"
