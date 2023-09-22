@@ -1033,6 +1033,8 @@ static char *fieldflags2str(uint f) {
   return buf;
 }
 
+uint get_ps2text_max_length(MYSQL_FIELD* field);
+
 static void
 print_field_types(DYNAMIC_STRING *ds, MYSQL_RES *result)
 {
@@ -1118,13 +1120,13 @@ print_table_data(DYNAMIC_STRING *ds,
       size_t numcells= charset_info->cset->numcells(charset_info,
                                                     field->name,
                                                     field->name + name_length);
-      int display_length= min<int>((int)(field->max_length + name_length - numcells), MAX_COLUMN_LENGTH);
+      size_t display_length= min<int>((int)(field->max_length + name_length - numcells), MAX_COLUMN_LENGTH);
       if (ds->max_length - ds->length < display_length) {
           char* new_ptr;
           size_t new_length = (ds->length + display_length + ds->alloc_increment) /
               ds->alloc_increment;
           new_length *= ds->alloc_increment;
-          if (new_ptr = (char*)my_realloc(ds->str, new_length, MYF(MY_WME)))
+          if ((new_ptr = (char*)my_realloc(ds->str, new_length, MYF(MY_WME))))
           {
               ds->str = new_ptr;
               ds->max_length = new_length;
@@ -1199,9 +1201,9 @@ print_table_data(DYNAMIC_STRING *ds,
       visible_length= charset_info->cset->numcells(charset_info, buffer, buffer + data_length);
       extra_padding= (uint) (data_length - visible_length);
 //      fprintf(stderr, "print_table_data, %d, %d, %d, %d ", opt_binhex, is_binary_field(field), field_max_length, MAX_COLUMN_LENGTH);
-      if (mysql->oracle_mode && is_binary_field_oracle(field))
+      if (mysql->oracle_mode && cur[off]&& is_binary_field_oracle(field))
         print_as_hex_oracle(ds_sorted, cur[off], lengths[off], field_max_length);
-      else if (opt_binhex && is_binary_field(field))
+      else if (opt_binhex && cur[off]&& is_binary_field(field))
         print_as_hex(ds_sorted, cur[off], lengths[off], field_max_length);
       else if (field_max_length > MAX_COLUMN_LENGTH)
          mm_print_sized_data(ds_sorted, buffer, data_length, MAX_COLUMN_LENGTH+extra_padding, FALSE);
@@ -1228,7 +1230,7 @@ void print_result_to_buf(DYNAMIC_STRING *ds,
                          MYSQL *mysql)
 {
   char         buff[200]; /* about 110 chars used so far */
-  char         time_buff[52+3+1]; /* time max + space&parens + NUL */
+  // char         time_buff[52+3+1]; /* time max + space&parens + NUL */
   ulong warnings = 0;
   //do
   {
@@ -1236,7 +1238,6 @@ void print_result_to_buf(DYNAMIC_STRING *ds,
     bool batchmode= false;//(status.batch && verbose <= 1) ? TRUE : FALSE;
     buff[0]= 0;
     bool quick = true;
-    uint               error= 0;
 
 
     /* Every branch must truncate  buff . */
@@ -1281,6 +1282,212 @@ void print_result_to_buf(DYNAMIC_STRING *ds,
     }
   } //while (!(err= mysql_next_result(mysql)));
 
+}
+
+static void
+print_table_data_stmt(MYSQL_STMT *stmt, MYSQL_FIELD * fields, uint num_fields, 
+  DYNAMIC_STRING *ds,
+  DYNAMIC_STRING *ds_sorted,
+  DYNAMIC_STRING *last_line,
+  MYSQL_RES *result, MYSQL *mysql)
+{
+  String separator(256);
+  // MYSQL_ROW    cur;
+  MYSQL_FIELD  *field;
+  bool         *num_flag;
+  size_t        sz;
+  uint i = 0;
+
+  sz = sizeof(bool) * num_fields;
+  num_flag = (bool *)my_safe_alloca(sz);
+  separator.copy("+", 1, charset_info);
+  for(i = 0; i<num_fields; i++)
+  {
+    field = &fields[i];
+    size_t length = column_names ? field->name_length : 0;
+    if (FALSE /*quick*/)
+      length = max<size_t>(length, field->length);
+    else
+      length = max<size_t>(length, field->max_length);
+    if (length < 4 && !IS_NOT_NULL(field->flags))
+      length = 4;                                        // Room for "NULL"
+    if (mysql->oracle_mode && is_binary_field_oracle(field)) {
+      length = length * 2;
+    }
+    else if (opt_binhex && is_binary_field(field)) {
+      length = 2 + length * 2;
+    }
+    field->max_length = (ulong)length;
+    separator.fill(separator.length() + length + 2, '-');
+    separator.append('+');
+  }
+  separator.append('\0');                       // End marker for \0
+  mm_puts((char*)separator.ptr(), ds);
+
+  // print column names
+  if (column_names)
+  {
+    (void)mm_fputs((char*)"|", ds);
+    for (i = 0; i < num_fields; i++)
+    {
+      field = &fields[i];
+      size_t name_length = strlen(field->name);
+      size_t numcells = charset_info->cset->numcells(charset_info,
+        field->name,
+        field->name + name_length);
+      size_t display_length = min<int>((int)(field->max_length + name_length - numcells), MAX_COLUMN_LENGTH);
+      if (ds->max_length - ds->length < display_length) {
+        char* new_ptr;
+        size_t new_length = (ds->length + display_length + ds->alloc_increment) /
+          ds->alloc_increment;
+        new_length *= ds->alloc_increment;
+        if ((new_ptr = (char*)my_realloc(ds->str, new_length, MYF(MY_WME))))
+        {
+          ds->str = new_ptr;
+          ds->max_length = new_length;
+        }
+      }
+      dynstr_append_cstring(ds, " %-*s |",
+        display_length,
+        field->name);
+      num_flag[i] = IS_NUM(field->type);
+    }
+    (void)mm_fputs((char*)"\n", ds);
+    mm_puts((char*)separator.ptr(), ds);
+  }
+
+  {
+    MYSQL_BIND *my_bind;
+    my_bool *is_null;
+    ulong *length;
+    int error;
+
+    /* Allocate array with bind structs, lengths and NULL flags */
+    my_bind = (MYSQL_BIND*)my_malloc(num_fields * sizeof(MYSQL_BIND),
+      MYF(MY_WME | MY_FAE | MY_ZEROFILL));
+    length = (ulong*)my_malloc(num_fields * sizeof(ulong),
+      MYF(MY_WME | MY_FAE));
+    is_null = (my_bool*)my_malloc(num_fields * sizeof(my_bool),
+      MYF(MY_WME | MY_FAE));
+
+    /* Allocate data for the result of each field */
+    for (i = 0; i < num_fields; i++)
+    {
+      uint max_length = get_ps2text_max_length(&fields[i]);
+      my_bind[i].buffer_type = MYSQL_TYPE_STRING;
+      my_bind[i].buffer = my_malloc(max_length, MYF(MY_WME | MY_FAE));
+      my_bind[i].buffer_length = max_length;
+      my_bind[i].is_null = &is_null[i];
+      my_bind[i].length = &length[i];
+
+      DBUG_PRINT("bind", ("col[%d]: buffer_type: %d, buffer_length: %lu",
+        i, my_bind[i].buffer_type, my_bind[i].buffer_length));
+    }
+
+    if (mysql_stmt_bind_result(stmt, my_bind))
+      die("mysql_stmt_bind_result failed: %d: %s",
+        mysql_stmt_errno(stmt), mysql_stmt_error(stmt));
+
+    while ((error = mysql_stmt_fetch(stmt)) == 0)
+    {
+      (void)mm_fputs((char*)"| ", ds_sorted);
+      for (uint off = 0; off < num_fields; off++) {
+        const char *buffer;
+        uint data_length;
+        uint field_max_length;
+        size_t visible_length;
+        uint extra_padding;
+
+        if (off)
+          (void)mm_fputs((char*)" ", ds_sorted);
+
+        if (off < max_replace_column && replace_column[off])
+        {
+          buffer = replace_column[off];
+          data_length = strlen(buffer);
+        } else {
+          if (*my_bind[off].is_null)
+          {
+            buffer = "NULL";
+            data_length = 4;
+          }
+          else
+          {
+            buffer = (char*)my_bind[off].buffer;
+            data_length = (uint)*my_bind[off].length;
+          }
+        }
+
+        if (glob_replace_regex)
+        {
+          /* Regex replace */
+          if (!multi_reg_replace(glob_replace_regex, (char*)buffer))
+          {
+            buffer = glob_replace_regex->buf;
+            data_length = strlen(buffer);
+          }
+        }
+
+        field_max_length = fields[off].max_length;
+
+        /*
+         How many text cells on the screen will this string span?  If it contains
+         multibyte characters, then the number of characters we occupy on screen
+         will be fewer than the number of bytes we occupy in memory.
+
+         We need to find how much screen real-estate we will occupy to know how
+         many extra padding-characters we should send with the printing function.
+        */
+        visible_length = charset_info->cset->numcells(charset_info, buffer, buffer + data_length);
+        extra_padding = (uint)(data_length - visible_length);
+        //      fprintf(stderr, "print_table_data, %d, %d, %d, %d ", opt_binhex, is_binary_field(field), field_max_length, MAX_COLUMN_LENGTH);
+        if (mysql->oracle_mode && !*my_bind[off].is_null && is_binary_field_oracle(&fields[off]))
+          print_as_hex_oracle(ds_sorted, (char*)my_bind[off].buffer, *my_bind[off].length, field_max_length);
+        else if (opt_binhex && !*my_bind[off].is_null && is_binary_field(&fields[off]))
+          print_as_hex(ds_sorted, (char*)my_bind[off].buffer, *my_bind[off].length, field_max_length);
+        else if (field_max_length > MAX_COLUMN_LENGTH)
+          mm_print_sized_data(ds_sorted, buffer, data_length, MAX_COLUMN_LENGTH + extra_padding, FALSE);
+        else
+        {
+          if (num_flag[off] != 0) /* if it is numeric, we right-justify it */
+            mm_print_sized_data(ds_sorted, buffer, data_length, field_max_length + extra_padding, TRUE);
+          else
+            mm_print_sized_data(ds_sorted, buffer, data_length, field_max_length + extra_padding, FALSE);
+        }
+        mm_fputs((char*)" |", ds_sorted);
+      }
+      (void)mm_fputs((char*)"\n", ds_sorted);
+    }
+
+    if (error != MYSQL_NO_DATA)
+      die("mysql_fetch didn't end with MYSQL_NO_DATA from statement: error: %d", error);
+    if (mysql_stmt_fetch(stmt) != MYSQL_NO_DATA)
+      die("mysql_fetch didn't end with MYSQL_NO_DATA from statement: %d %s", mysql_stmt_errno(stmt), mysql_stmt_error(stmt));
+
+    for (i = 0; i < num_fields; i++)
+    {
+      /* Free data for output */
+      my_free(my_bind[i].buffer);
+    }
+    /* Free array with bind structs, lengths and NULL flags */
+    my_free(my_bind);
+    my_free(length);
+    my_free(is_null);
+  }
+  mm_puts((char*)separator.ptr(), last_line);
+  my_safe_afree((bool *)num_flag, sz);
+}
+void print_result_to_buf_stmt(MYSQL_STMT *stmt, MYSQL_FIELD * fields, uint num_fields, 
+  DYNAMIC_STRING *ds,
+  DYNAMIC_STRING *ds_sorted,
+  DYNAMIC_STRING *last_line,
+  my_bool vertical,
+  MYSQL_RES *result,
+  MYSQL *mysql)
+{
+  if (stmt && mysql_stmt_num_rows(stmt) > 0) {
+    print_table_data_stmt(stmt, fields, num_fields, ds, ds_sorted, last_line, result, mysql);
+  }
 }
 
 class LogFile {
@@ -1795,6 +2002,9 @@ static void show_warnings_before_error(MYSQL* mysql)
   DBUG_ENTER("show_warnings_before_error");
 
   if (!mysql)
+    DBUG_VOID_RETURN;
+  
+  if (mysql->oracle_mode)
     DBUG_VOID_RETURN;
 
   if (mysql_query(mysql, query))
@@ -2674,7 +2884,7 @@ void dynstr_rm_explain(DYNAMIC_STRING* ds) {
     is_newline = (*p == '\n');
     if (is_newline){
       newline_flag = 1;
-      if ((flag == 0 || flag == 2) && (strncmp(buf, explain_head, strlen(explain_head)) == 0 ||
+      if ((flag == 0 || flag == 2) && (strncmp(buf, explain_head, strlen(explain_head)) == 0 || 
           strncmp(buf, explain_head2, strlen(explain_head2)) == 0)) flag = 1;
       else if (flag == 1 && first == ' ') flag = 2;
     }
@@ -2715,7 +2925,7 @@ void dynstr_rm_explain2file(char *file_dest, const char *file_src) {
   strcat(file_dest, ".iep");
   str_to_file(file_dest, ds_src.str, ds_src.length);
   dynstr_free(&ds_src);
-
+  
   DBUG_VOID_RETURN;
 }
 
@@ -3450,7 +3660,7 @@ void var_query_set(VAR *var, const char *query, const char** query_end)
       replace_numeric_round_append(glob_replace_numeric_round, &ds_temp,
         buffer, strlen(buffer));
     } else {
-      replace_numeric_round_append(glob_replace_numeric_round, &ds_temp,
+      replace_numeric_round_append(glob_replace_numeric_round, &ds_temp, 
         val, len);
     }
   }
@@ -4475,9 +4685,7 @@ void do_remove_file(struct st_command *command)
                      rm_args, sizeof(rm_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_filename.str))
-    DBUG_VOID_RETURN;
-
+  
   DBUG_PRINT("info", ("removing file: %s", ds_filename.str));
   error= my_delete(ds_filename.str, MYF(disable_warnings ? 0 : MY_WME)) != 0;
   handle_command_error(command, error, my_errno);
@@ -4521,8 +4729,6 @@ void do_remove_files_wildcard(struct st_command *command)
                      ' ');
   fn_format(dirname, ds_directory.str, "", "", MY_UNPACK_FILENAME);
 
-  if (bad_path(ds_directory.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("listing directory: %s", dirname));
   if (!(dir_info= my_dir(dirname, MYF(MY_DONT_SORT | MY_WANT_STAT | MY_WME))))
@@ -4598,8 +4804,6 @@ void do_copy_file(struct st_command *command)
                      sizeof(copy_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_to_file.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("Copy %s to %s", ds_from_file.str, ds_to_file.str));
   /* MY_HOLD_ORIGINAL_MODES prevents attempts to chown the file */
@@ -4638,8 +4842,6 @@ void do_move_file(struct st_command *command)
                      sizeof(move_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_to_file.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("Move %s to %s", ds_from_file.str, ds_to_file.str));
   error= (my_rename(ds_from_file.str, ds_to_file.str,
@@ -4679,8 +4881,6 @@ void do_chmod_file(struct st_command *command)
                      sizeof(chmod_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_file.str))
-    DBUG_VOID_RETURN;
 
   /* Parse what mode to set */
   if (ds_mode.length != 4 ||
@@ -4753,8 +4953,6 @@ void do_mkdir(struct st_command *command)
                      mkdir_args, sizeof(mkdir_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_dirname.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("creating directory: %s", ds_dirname.str));
   error= my_mkdir(ds_dirname.str, 0777, MYF(MY_WME)) != 0;
@@ -4787,8 +4985,6 @@ void do_rmdir(struct st_command *command)
                      rmdir_args, sizeof(rmdir_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_dirname.str))
-    DBUG_VOID_RETURN;
 
   DBUG_PRINT("info", ("removing directory: %s", ds_dirname.str));
   if (my_rmtree(ds_dirname.str, MYF(0)))
@@ -4906,8 +5102,6 @@ static void do_list_files_write_file_command(struct st_command *command,
                      list_files_args,
                      sizeof(list_files_args)/sizeof(struct command_arg), ' ');
 
-  if (bad_path(ds_filename.str))
-    DBUG_VOID_RETURN;
 
   init_dynamic_string(&ds_content, "", 1024, 1024);
   error= get_list_files(&ds_content, &ds_dirname, &ds_wild);
@@ -5012,8 +5206,6 @@ void do_write_file_command(struct st_command *command, my_bool append)
                      sizeof(write_file_args)/sizeof(struct command_arg),
                      ' ');
 
-  if (bad_path(ds_filename.str))
-    DBUG_VOID_RETURN;
 
   if (!append && access(ds_filename.str, F_OK) == 0)
   {
@@ -6784,8 +6976,6 @@ void do_connect(struct st_command *command)
     if (!(con_slot= find_connection_by_name("-closed_connection-")))
       die("Connection limit exhausted, you can have max %d connections",
           opt_max_connections);
-    my_free(con_slot->name);
-    con_slot->name= 0;
   }
 
   init_connection_thd(con_slot);
@@ -6802,6 +6992,9 @@ void do_connect(struct st_command *command)
 #endif
   if (opt_compress || con_compress)
     mysql_options(con_slot->mysql, MYSQL_OPT_COMPRESS, NullS);
+  if (csname && strncasecmp(csname, "GB18030-2022", 12) == 0) {
+    csname = (char*)"GB18030";
+  }
   mysql_options(con_slot->mysql, MYSQL_SET_CHARSET_NAME,
                 csname?csname: charset_info->csname);
   if (opt_charsets_dir)
@@ -8489,8 +8682,22 @@ void append_result(DYNAMIC_STRING *ds, MYSQL_RES *res)
     uint i;
     lengths = mysql_fetch_lengths(res);
     for (i = 0; i < num_fields; i++)
-      append_field(ds, i, &fields[i],
-                   row[i], lengths[i], !row[i]);
+      //if (row[i] && is_binary_field_oracle(&fields[i])) {
+      //  ulong len = lengths[i] * 2;
+      //  ulong j = 0;
+      //  uchar *p = (uchar*)row[i];
+      //  char *tmp = (char*)malloc(len+2);
+      //  if (tmp) {
+      //    memset(tmp, 0, len + 2);
+      //    for (j = 0; j < lengths[i]; j++) {
+      //      sprintf(tmp+2*j, "%02X", *(p+j));
+      //    }
+      //    append_field(ds, i, &fields[i], tmp, len, !row[i]);
+      //    free(tmp);
+      //  }
+      //} else {
+        append_field(ds, i, &fields[i], row[i], lengths[i], !row[i]);
+      //}
     if (!display_result_vertically)
       dynstr_append_mem(ds, "\n", 1);
   }
@@ -8501,7 +8708,34 @@ void append_result(DYNAMIC_STRING *ds, MYSQL_RES *res)
   Append all results from ps execution to the dynamic string separated
   with '\t'. Values may be converted with 'replace_column'
 */
-
+uint get_ps2text_max_length(MYSQL_FIELD* field) {
+  uint max_length = field->max_length;
+  switch (field->type) {
+  case MYSQL_TYPE_MEDIUM_BLOB:
+  case MYSQL_TYPE_TINY_BLOB:
+  case MYSQL_TYPE_LONG_BLOB:
+  case MYSQL_TYPE_BLOB:
+  case MYSQL_TYPE_OB_RAW: {
+    max_length = max_length * 2 + 2;
+    break;
+  }
+  case MYSQL_TYPE_OB_INTERVAL_DS:
+  case MYSQL_TYPE_OB_INTERVAL_YM: {
+    max_length = max_length + 128;
+    break;
+  }
+  case MYSQL_TYPE_OB_TIMESTAMP_NANO:
+  case MYSQL_TYPE_OB_TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+  case MYSQL_TYPE_OB_TIMESTAMP_WITH_TIME_ZONE: {
+    max_length = max_length + 128;
+    break;
+  }
+  default: {
+    // do nothing;
+  }
+  }
+  return max_length;
+}
 void append_stmt_result(DYNAMIC_STRING *ds, MYSQL_STMT *stmt,
                         MYSQL_FIELD *fields, uint num_fields)
 {
@@ -8522,7 +8756,7 @@ void append_stmt_result(DYNAMIC_STRING *ds, MYSQL_STMT *stmt,
   /* Allocate data for the result of each field */
   for (i= 0; i < num_fields; i++)
   {
-    uint max_length= fields[i].max_length + 1;
+    uint max_length = get_ps2text_max_length(&fields[i]);
     my_bind[i].buffer_type= MYSQL_TYPE_STRING;
     my_bind[i].buffer= my_malloc(max_length, MYF(MY_WME | MY_FAE));
     my_bind[i].buffer_length= max_length;
@@ -8539,9 +8773,33 @@ void append_stmt_result(DYNAMIC_STRING *ds, MYSQL_STMT *stmt,
 
   while ((error=mysql_stmt_fetch(stmt)) == 0)
   {
-    for (i= 0; i < num_fields; i++)
-      append_field(ds, i, &fields[i], (char*)my_bind[i].buffer,
-                   *my_bind[i].length, *my_bind[i].is_null);
+    for (i = 0; i < num_fields; i++) {
+      if (3 == opt_result_format_version || 4 == opt_result_format_version) {
+        if (!*my_bind[i].is_null && stmt->mysql->oracle_mode && is_binary_field_oracle(&fields[i])) {
+          ulong len = *my_bind[i].length * 2;
+          ulong j = 0;
+          uchar *p = (uchar*)my_bind[i].buffer;
+          char *tmp = (char*)malloc(len + 2);
+          if (tmp) {
+            memset(tmp, 0, len + 2);
+            for (j = 0; j < *my_bind[i].length; j++) {
+              sprintf(tmp + 2 * j, "%02X", *(p + j));
+            }
+            append_field(ds, i, &fields[i], tmp, len, *my_bind[i].is_null);
+            free(tmp);
+          }
+        } else {
+          if (*my_bind[i].is_null) {
+            append_field(ds, i, &fields[i], (char*)my_bind[i].buffer, *my_bind[i].length, *my_bind[i].is_null);
+          } else {
+            mm_write(ds, (char*)my_bind[i].buffer, *my_bind[i].length, MY_PRINT_SPS_0 | MY_PRINT_MB);
+          }
+        }
+      } else {
+        append_field(ds, i, &fields[i], (char*)my_bind[i].buffer, *my_bind[i].length, *my_bind[i].is_null);
+      }
+    }
+
     if (!display_result_vertically)
       dynstr_append_mem(ds, "\n", 1);
   }
@@ -8743,24 +9001,23 @@ int append_warnings(DYNAMIC_STRING *ds, MYSQL* mysql)
   */
   DBUG_ASSERT(!mysql_more_results(mysql));
 
-  if (mysql_real_query(mysql, "SHOW WARNINGS", 13))
-    die("Error running query \"SHOW WARNINGS\": %s", mysql_error(mysql));
-
-  if (!(warn_res= mysql_store_result(mysql)))
-    die("Warning count is %u but didn't get any warnings",
-	count);
-
   init_dynamic_string(&res, "", 1024, 1024);
 
-  append_result(&res, warn_res);
-  mysql_free_result(warn_res);
+  if (!mysql->oracle_mode) 
+  {
+    if (mysql_real_query(mysql, "SHOW WARNINGS", 13))
+      die("Error running query \"SHOW WARNINGS\": %s", mysql_error(mysql));
+
+    if (!(warn_res = mysql_store_result(mysql)))
+      die("Warning count is %u but didn't get any warnings", count);
+
+    append_result(&res, warn_res);
+    mysql_free_result(warn_res);
+  }
 
   DBUG_PRINT("warnings", ("%s", res.str));
 
-  if (display_result_sorted)
-    dynstr_append_sorted(ds, &res, 0);
-  else
-    dynstr_append_mem(ds, res.str, res.length);
+  dynstr_append_mem(ds, res.str, res.length);
   dynstr_free(&res);
   DBUG_RETURN(count);
 }
@@ -9227,7 +9484,7 @@ void handle_no_error(struct st_command *command)
 
 void run_query_stmt(struct st_connection *cn, struct st_command *command,
                     char *query, size_t query_len, DYNAMIC_STRING *ds, DYNAMIC_STRING *ds_header,
-                    DYNAMIC_STRING *ds_warnings)
+                    DYNAMIC_STRING *last_line, DYNAMIC_STRING *ds_warnings)
 {
   MYSQL_RES *res= NULL;     /* Note that here 'res' is meta data result set */
   MYSQL *mysql= cn->mysql;
@@ -9355,10 +9612,17 @@ void run_query_stmt(struct st_connection *cn, struct st_command *command,
       if (display_metadata)
         append_metadata(ds_header, fields, num_fields);
 
-      if (!display_result_vertically)
-        append_table_headings(ds_header, fields, num_fields);
+      //if ((3 != opt_result_format_version
+      //  && 4 != opt_result_format_version)
+      //  || match_re(&explain_st, query)) {
 
-      append_stmt_result(ds, stmt, fields, num_fields);
+        if (!display_result_vertically)
+          append_table_headings(ds_header, fields, num_fields);
+
+        append_stmt_result(ds, stmt, fields, num_fields);
+      //} else {
+      //  print_result_to_buf_stmt(stmt, fields, num_fields, ds_header, ds, last_line, 0, res, mysql);
+      //}
 
       mysql_free_result(res);     /* Free normal result set with meta data */
 
@@ -9713,7 +9977,7 @@ void run_query(struct st_connection *cn, struct st_command *command, int flags)
   if (!(disable_explain && query_len >= 7 && (0 == strncmp(query, "explain", 7) || 0 == strncmp(query, "EXPLAIN", 7))))
   {
     if (ps_protocol_enabled && complete_query && match_re(&ps_re, query)) {
-      run_query_stmt(cn, command, query, query_len, &ds_sorted, ds, &ds_warnings);
+      run_query_stmt(cn, command, query, query_len, &ds_sorted, ds, &last_line, &ds_warnings);
     } else if (use_px && match_re(&parallel_re, query)) {
       // auto parallel query 
       run_query_parallel(cn, command, flags, query, query_len, ds, &ds_sorted, &last_line, &ds_warnings); 
@@ -11224,15 +11488,6 @@ struct st_regex
 int reg_replace(char** buf_p, int* buf_len_p, char *pattern, char *replace,
                 char *string, int icase);
 
-bool is_reg_valid(char last_start_re, char start_re){
-  if (start_re == last_start_re || 
-    start_re == '(' || start_re == '[' || start_re == '{' || start_re == '<'){
-    return true;
-  } else {
-    return false;
-  }
-}
-
 bool parse_re_part(char *start_re, char *end_re,
                    char **p, char *end, char **buf)
 {
@@ -11360,10 +11615,9 @@ void append_replace_regex(char* expr, char *expr_end, struct st_replace_regex* r
 
     //skip get_ddl_oracle.test
     while (p < expr_end){
-      if (is_reg_valid(start_re, *p))
+      if (*p == '/')
         break;
-      else
-        p++;
+      p++;
     }
   }
 

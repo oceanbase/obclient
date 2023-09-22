@@ -2132,9 +2132,6 @@ will override directives in the config file.
 Here is a sample config file C<~/.mytop> which implements the defaults
 described above.
 
-  user=root
-  pass=
-  host=localhost
   db=test
   delay=5
   port=3306

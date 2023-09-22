@@ -29,10 +29,10 @@ my @defaults_options;   #  Leading --no-defaults, --defaults-file, etc.
 $opt_example       = 0;
 $opt_help          = 0;
 $opt_log           = undef();
-$opt_mysqladmin    = "";
-$opt_mysqld        = "";
+$opt_mysqladmin    = "@bindir@/mysqladmin";
+$opt_mysqld        = "@sbindir@/mysqld";
 $opt_no_log        = 0;
-$opt_password      = undef();
+$opt_password      = "";
 $opt_tcp_ip        = 0;
 $opt_user          = "";
 $opt_version       = 0;
@@ -730,7 +730,6 @@ sub example
 mysqld     = @bindir@/mysqld_safe
 mysqladmin = @bindir@/mysqladmin
 user       = multi_admin
-password   = my_password
 
 [mysqld2]
 socket     = /tmp/mysql.sock2
