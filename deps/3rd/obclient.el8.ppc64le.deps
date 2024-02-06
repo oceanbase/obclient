@@ -1,0 +1,8 @@
+[target]
+os=8
+arch=ppc64le
+repo=file:///home/ips_ob/deps_ppc64le_rpm
+
+[deps]
+devdeps-openssl-static-1.1.1u-1.el8.ppc64le.rpm
+devdeps-ncurses-static-6.2-1.el8.ppc64le.rpm
