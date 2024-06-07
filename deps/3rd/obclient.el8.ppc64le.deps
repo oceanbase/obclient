@@ -1,7 +1,7 @@
 [target]
 os=8
 arch=ppc64le
-repo=file:///home/ips_ob/deps_ppc64le_rpm
+repo=https://mirrors.aliyun.com/oceanbase/development-kit/el/8/ppc64le
 
 [deps]
 devdeps-openssl-static-1.1.1u-1.el8.ppc64le.rpm
