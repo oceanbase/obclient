@@ -26,12 +26,12 @@ cmake . \
 -DOPENSSL_SSL_LIBRARY=$DEP_DIR/lib/libssl.a \
 -DOPENSSL_CRYPTO_LIBRARY=$DEP_DIR/lib/libcrypto.a \
 -DCURSES_CURSES_H_PATH=$DEP_DIR/include \
--DCURSES_CURSES_LIBRARY=$DEP_DIR/lib/libcurses.a \
--DCURSES_FORM_LIBRARY=$DEP_DIR/lib/libform.a \
+-DCURSES_CURSES_LIBRARY=$DEP_DIR/lib/libcurses.so \
 -DCURSES_HAVE_CURSES_H=$DEP_DIR/include/curses.h \
 -DCURSES_INCLUDE_PATH=$DEP_DIR/include \
--DCURSES_LIBRARY=$DEP_DIR/lib/libcurses.a \
--DCURSES_NCURSES_LIBRARY=$DEP_DIR/lib/libncurses.a \
+-DCURSES_LIBRARY=$DEP_DIR/lib/libcurses.so \
+-DCURSES_NCURSES_LIBRARY=$DEP_DIR/lib/libncurses.so \
+-DCURSES_FORM_LIBRARY=$DEP_DIR/lib/libform.so \
 -DWITH_ZLIB=system \
 -DWITH_LIBWRAP=0 \
 -DENABLED_LOCAL_INFILE=1 \
