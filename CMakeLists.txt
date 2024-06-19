@@ -31,6 +31,8 @@ ENDIF()
 
 MESSAGE(STATUS "Running cmake version ${CMAKE_VERSION}")
 
+file(STRINGS ./rpm/obclient-VER.txt OBCLIENT_VERSION LIMIT_COUNT 1)
+
 SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}
   ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_SOURCE_DIR}/cmake/Internal/CPack)
 

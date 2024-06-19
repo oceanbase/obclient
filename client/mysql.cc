@@ -49,6 +49,9 @@
 #include <locale.h>
 #endif
 
+#include <ob_load_balance.h>
+#include <map>
+
 const char *VER = OBCLIENT_VERSION;
 
 /* Don't try to make a nice table if the data is too big */
@@ -126,6 +129,7 @@ static void my_vidattr(chtype attrs)
 #define PROMPT_CHAR '\\'
 #define DEFAULT_DELIMITER ";"
 
+#define MAX_BUFFER_SIZE 1024
 #define MAX_BATCH_BUFFER_SIZE (1024L * 1024L * 1024L)
 
 typedef struct st_status
@@ -148,8 +152,6 @@ static my_bool dbms_serveroutput = 0;
 static my_bool dbms_prepared = 0;
 static regex_t dbms_enable_re;
 static regex_t dbms_disable_re;
-static regex_t num_width_re;
-static regex_t num_format_re;
 static regex_t column_format_re;
 MYSQL_STMT *dbms_stmt = NULL;
 static const char *dbms_enable_sql = "call dbms_output.enable()";
@@ -162,6 +164,7 @@ static MYSQL_BIND dbms_rs_bind[2];
 static char dbms_line_buffer[32767];
 static char dbms_status;
 static int put_stmt_error(MYSQL *con, MYSQL_STMT *stmt);
+static void call_dbms_get_line(MYSQL *mysql, uint error);
 
 #define  NS  13
 static regex_t pl_create_sql_re;
@@ -183,12 +186,17 @@ static uint show_object_offset = 12;
 bool is_pl_escape_sql = 0;
 static regex_t pl_escape_sql_re;
 
+static regex_t pl_alter_sql_re;
+static uint alter_type_offset = 2;
+static uint alter_schema_offset = 4;
+static uint alter_schema_quote_offset = 5;
+static uint alter_object_offset = 7;
+static uint alter_object_quote_offset = 8;
+
 static char *pl_last_object = 0, *pl_last_type = 0, *pl_last_schema = 0;
 static char *pl_type = 0, *pl_object = 0, *pl_schema = 0;
 static uint pl_type_len = 0, pl_object_len = 0, pl_schema_len = 0;
-static uint obclient_num_width = 0;
-static bool force_set_num_width_close = 1; //default support as oracle
-
+static int handle_oracle_sql(MYSQL *mysql, String *buffer);
 
 static MYSQL mysql;			/* The connection */
 static my_bool ignore_errors=0,wait_flag=0,quick=0,
@@ -221,6 +229,8 @@ static char *current_host,*current_db,*current_user=0,*opt_password=0,
             *current_prompt=0, *delimiter_str= 0,
             *default_charset= (char*) MYSQL_AUTODETECT_CHARSET_NAME,
             *opt_init_command= 0;
+static char *current_host_success = 0;
+static int current_port_success = 0;
 static char *histfile;
 static char *histfile_tmp;
 static String glob_buffer,old_buffer;
@@ -292,8 +302,7 @@ static int com_nopager(String *str, char*), com_pager(String *str, char*),
 #endif
 
 static int read_and_execute(bool interactive);
-static int sql_connect(char *host,char *database,char *user,char *password,
-		       uint silent);
+static int sql_connect(char *host,char *database,char *user,char *password, uint silent);
 static const char *server_version_string(MYSQL *mysql);
 static int put_info(const char *str,INFO_TYPE info,uint error=0,
                     const char *sql_state = 0, my_bool oracle_mode = FALSE);
@@ -323,7 +332,49 @@ static void report_progress_end();
 
 static void get_current_db();
 
+/*ON:1, OFF:0*/
+static my_bool is_define_oracle = 1;
+static char define_char_oracle = '&';
+static my_bool is_feedback_oracle = 1;
+static int feedback_int_oracle = -1;
+static my_bool is_sqlblanklines_oracle = 1;
+static my_bool is_echo_oracle = 0;
+static my_bool is_termout_oracle = 1;
+static int pagesize_int_oracle = -1;
+static my_bool is_trimspool_oracle = 1;
+static my_bool is_exitcommit_oracle = 1;
+static uint obclient_num_width = 10;
+static bool force_set_num_width_close = 1; //default support as oracle
 static my_bool prompt_cmd_oracle(const char *str, char **text);
+static my_bool is_global_comment(String *globbuffer);
+static my_bool set_cmd_oracle(const char *str);
+static my_bool set_param_oracle(const char *str);
+static my_bool scan_define_oracle(String *buffer, String *newbuffer);
+static my_bool exec_cmd_oracle(String *buffer, String *newbuffer);
+static my_bool is_termout_oracle_enable(MYSQL *mysql);
+
+
+static char obclient_login[MAX_BUFFER_SIZE] = { 0 };
+static char* get_login_sql_path();
+static void start_login_sql(MYSQL *mysql, String *buffer, const char *path);
+
+#define IS_CMD_SLASH 1    //oracle /
+#define IS_CMD_LINE 2     //\s,\h...
+static int is_cmd_line(char *pos, size_t len);
+
+#define COMMAND_MAX 50
+#define COMMAND_NAME_LEN 32
+static char *ob_disable_commands_str = 0;
+static char disable_comands[COMMAND_MAX][COMMAND_NAME_LEN] = { 0 };
+static int disable_command_count = 0;
+static my_bool is_command_valid(const char* name);
+
+static my_bool is_source_oracle = 0;
+static std::map<void*, void*> map_global;
+static void free_map_global();
+
+static char* ob_proxy_user_str = 0;
+static char* ob_socket5_proxy_str = 0;
 
 /* A structure which contains information on the commands this program
    can understand. */
@@ -1157,6 +1208,7 @@ extern "C" sig_handler handle_sigint(int sig);
 static sig_handler window_resize(int sig);
 #endif
 
+static char* ob_service_name_str = NULL;
 
 const char DELIMITER_NAME[]= "delimiter";
 const uint DELIMITER_NAME_LEN= sizeof(DELIMITER_NAME) - 1;
@@ -1257,24 +1309,14 @@ void init_width_and_format_for_result_value(void)
   /* SET NUMF format / SET NUMFORMAT format */
   /* COLUMN c1 FORMAT format*/
 
-  const char *num_width_re_str = 
-    "^("
-    "[[:space:]]*SET[[:space:]]+(NUMWIDTH|NUM)[[:space:]]+)";
-  const char *num_format_re_str = 
-    "^("
-    "[[:space:]]*SET[[:space:]]+(NUMFORMAT|NUMF)[[:space:]]+)";
   const char *column_format_re_str = 
     "^("
     "[[:space:]]*COLUMN[[:space:]]+([[:alnum:]_])[[:space:]]+"
-    "FORMAT[[:space:]]+)";
-  init_re_comp(&num_width_re, num_width_re_str);
-  init_re_comp(&num_format_re, num_format_re_str);
+    "FORMAT[[:space:]]+([[:alnum:]_])[[:space:]]*)";
   init_re_comp(&column_format_re, column_format_re_str);
 }
 
 void free_width_and_format_for_result_value() {
-  regfree(&num_width_re);
-  regfree(&num_format_re);
   regfree(&column_format_re);
 }
 
@@ -1282,39 +1324,58 @@ void init_pl_sql(void)
 {
   const char *pl_create_sql_re_str =
     "^("
-    //ǰ׺ create [or replace]
+    //prefix create [or replace]
     "[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?"
-    // package( ���� 3 ~ 6 )
+    // package( brackets 3 ~ 6 )
     "(VIEW|PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?|LIBRARY|QUEUE|JAVA[[:space:]]+(SOURCE|CLASS)|DIMENSION|ASSEMBLY|HIERARCHY|ATTRIBUTE[[:space:]]+DIMENSION|ANALYTIC VIEW)[[:space:]]+"
-    // schema ( ���� 7 ~ 9)
+    // schema ( brackets 7 ~ 9)
     //"((\\\")?([[:alnum:]_]+)\\\"?\\.)?"
     "(([[:alnum:]$_]+)\\.|\\\"([^\"]*)\\\"\\.)?[[:space:]]*"
-    // object ( ���� 10 ~ 12)
+    // object ( brackets 10 ~ 12)
+    //"(\\\")?([[:alnum:]_]+)\\\"?[[:space:]]*"
+    "(([[:alnum:]$_]+)|\\\"([^\"]*)\\\")?[[:space:]]*"
+    ")";
+
+  //alter procedure TEST.proc_test2 compile;
+  const char *pl_alter_sql_re_str = 
+    "^("
+    //prefix alter,
+    "[[:space:]]*ALTER[[:space:]]+"
+    // package( brackets 2 )
+    "(VIEW|PROCEDURE|FUNCTION|PACKAGE)[[:space:]]+"
+    // schema ( brackets 3 ~ 5)
+    //"((\\\")?([[:alnum:]_]+)\\\"?\\.)?"
+    "(([[:alnum:]$_]+)\\.|\\\"([^\"]*)\\\"\\.)?[[:space:]]*"
+    // object ( brackets 6 ~ 8)
     //"(\\\")?([[:alnum:]_]+)\\\"?[[:space:]]*"
     "(([[:alnum:]$_]+)|\\\"([^\"]*)\\\")?[[:space:]]*"
     ")";
 
   const char *pl_show_errors_sql_re_str =
     "^("
-    //ǰ׺ show err[ors]
-    "[[:space:]]*SHOW[[:space:]]+ERR(ORS)?"
-    //package( ���� 4 ~ 7 )
+    //prefix show err[ors]
+    "[[:space:]]*SHOW[[:space:]]+ERR(OR|ORS)?"
+    //package( brackets 4 ~ 7 )
     "([[:space:]]+(VIEW|PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?|LIBRARY|QUEUE|JAVA[[:space:]]+(SOURCE|CLASS)|DIMENSION|ASSEMBLY|HIERARCHY|ATTRIBUTE[[:space:]]+DIMENSION|ANALYTIC VIEW)[[:space:]]+"
-    //schema( ���� 8 ~ 10 )
+    //schema( brackets 8 ~ 10 )
     "((\\\")?([[:alnum:]_]+)\\\"?\\.)?"
-    //object( ���� 11 ~ 12 )
+    //object( brackets 11 ~ 12 )
     "(\\\")?([[:alnum:]_]+)\\\"?)?"
     "[[:space:]]*"
     "$)";
 
   const char *pl_escape_sql_re_str =
     "^("
+    // begin/declare support <<label>>
+    "[[:space:]]*(<<[[:alnum:]_]+>>)?"
+    // pl sql
     "[[:space:]]*(BEGIN|DECLARE)[[:space:]]*|"
     "[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?"
     "(PROCEDURE|FUNCTION|PACKAGE([[:space:]]+BODY)?|TRIGGER|TYPE([[:space:]]+BODY)?)[[:space:]]+"
     ")";
 
   init_re_comp(&pl_create_sql_re, pl_create_sql_re_str);
+  init_re_comp(&pl_alter_sql_re, pl_alter_sql_re_str);
   init_re_comp(&pl_show_errors_sql_re, pl_show_errors_sql_re_str);
   init_re_comp(&pl_escape_sql_re, pl_escape_sql_re_str);
 }
@@ -1322,6 +1383,7 @@ void init_pl_sql(void)
 void free_pl_sql(void)
 {
   regfree(&pl_create_sql_re);
+  regfree(&pl_alter_sql_re);
   regfree(&pl_show_errors_sql_re);
   regfree(&pl_escape_sql_re);
 }
@@ -1334,6 +1396,42 @@ void free_pl()
   pl_last_object = NULL;
   pl_last_type = NULL;
   pl_last_schema = NULL;
+}
+
+void init_disable_commands() {
+  int i = 0,j= 0;
+  if (NULL != ob_disable_commands_str) {
+    int len = strlen(ob_disable_commands_str);
+    char *p = ob_disable_commands_str;
+
+    memset(disable_comands, 0, sizeof(disable_comands));
+    for (i = 0; i < len; i++) {
+      if (p[i] == ',' || p[i] == ';') {
+        if (j > 0)
+          disable_command_count++;
+        j = 0;
+        continue;
+      }
+      if (j < COMMAND_NAME_LEN) {
+        disable_comands[disable_command_count][j] = p[i];
+        j++;
+      }
+    }
+    if (j > 0)
+      disable_command_count++;
+  }
+}
+my_bool is_command_valid(const char* name) {
+  int i = 0;
+  my_bool ret = true;
+  for (i = 0; i < disable_command_count; i++) {
+    if (strlen(disable_comands[i]) == strlen(name) 
+      && !strncasecmp(disable_comands[i], name, strlen(name))) {
+      ret = false;
+      break;
+    }
+  }
+  return ret;
 }
 
 static void fmt_str(char* p_in, int p_in_len, char* p_out, int p_out_len){
@@ -1441,13 +1539,13 @@ int main(int argc,char *argv[])
     my_end(0);
     exit(1);
   }
+
   preserve_comments = (skip_comments ? 0:1);
   sf_leaking_memory= 0;
   glob_buffer.realloc(512);
   completion_hash_init(&ht, 128);
   init_alloc_root(&hash_mem_root, "hash", 16384, 0, MYF(0));
-  if (sql_connect(current_host,current_db,current_user,opt_password,
-		  opt_silent))
+  if (sql_connect(current_host,current_db,current_user,opt_password, opt_silent))
   {
     quick= 1;					// Avoid history
     status.exit_status= 1;
@@ -1535,6 +1633,10 @@ int main(int argc,char *argv[])
   init_dbms_output();
   init_pl_sql();
   init_width_and_format_for_result_value();
+  init_disable_commands();
+
+  //start glogin.sql
+  start_login_sql(&mysql, &glob_buffer, get_login_sql_path());
 
   status.exit_status= read_and_execute(!status.batch);
   if (opt_outfile)
@@ -1547,6 +1649,10 @@ int main(int argc,char *argv[])
 
 sig_handler mysql_end(int sig)
 {
+  if (is_exitcommit_oracle && mysql.oracle_mode) {
+    mysql_commit(&mysql);
+  }
+  
 #ifndef _WIN32
   /*
     Ignoring SIGQUIT and SIGINT signals when cleanup process starts.
@@ -1590,6 +1696,7 @@ sig_handler mysql_end(int sig)
   my_free(part_username);
   my_free(default_prompt);
   my_free(current_prompt);
+  my_free(current_host_success);
   while (embedded_server_arg_count > 1)
     my_free(embedded_server_args[--embedded_server_arg_count]);
   mysql_server_end();
@@ -1598,6 +1705,7 @@ sig_handler mysql_end(int sig)
   free_pl_sql();
   free_width_and_format_for_result_value();
   free_pl();
+  free_map_global();
   my_end(my_end_arg);
   exit(status.exit_status);
 }
@@ -1608,6 +1716,7 @@ sig_handler mysql_end(int sig)
 static bool do_connect(MYSQL *mysql, const char *host, const char *user,
                        const char *password, const char *database, ulong flags)
 {
+  bool is_success = 0;
   if (opt_secure_auth)
     mysql_options(mysql, MYSQL_SECURE_AUTH, (char *) &opt_secure_auth);
 #if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
@@ -1631,13 +1740,22 @@ static bool do_connect(MYSQL *mysql, const char *host, const char *user,
     mysql_options(mysql, MYSQL_DEFAULT_AUTH, opt_default_auth);
 
   mysql_options(mysql, MYSQL_OPT_CONNECT_ATTR_RESET, 0);
-  mysql_options4(mysql, MYSQL_OPT_CONNECT_ATTR_ADD,
-                 "program_name", "mysql");
+  mysql_options4(mysql, MYSQL_OPT_CONNECT_ATTR_ADD, "program_name", "mysql");
+
+  //proxy mode
   if(is_proxymode) {
     mysql->ob_server_version = PROXY_MODE;
   }
-  return mysql_real_connect(mysql, host, user, password, database,
-                            opt_mysql_port, opt_mysql_unix_port, flags);
+  //oracle proxy user
+  if (ob_proxy_user_str && ob_proxy_user_str[0]) {
+    mysql_options(mysql, OB_OPT_PROXY_USER, ob_proxy_user_str);
+  }
+  if (mysql_real_connect(mysql, host, user, password, database, opt_mysql_port, opt_mysql_unix_port, flags)) {
+    is_success = 1;
+    current_host_success = my_strdup(host?host:"", MYF(MY_WME));
+    current_port_success = opt_mysql_port;
+  }
+  return is_success;
 }
 
 
@@ -1751,8 +1869,7 @@ static struct my_option my_long_options[] =
   {"column-type-info", OPT_COLUMN_TYPES, "Display column type information.",
    &column_types_flag, &column_types_flag,
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"comments", 'c', "Preserve comments. Send comments to the server."
-   " The default is --skip-comments (discard comments), enable with --comments.",
+  {"comments", 'c', "Comment stripping is deprecated. ",
    &preserve_comments_invalid, &preserve_comments_invalid,
    0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"skip-comments", 0, "Preserve comments. Send comments to the server."
@@ -1806,7 +1923,7 @@ static struct my_option my_long_options[] =
    &opt_init_command, &opt_init_command, 0,
    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"local-infile", OPT_LOCAL_INFILE, "Enable/disable LOAD DATA LOCAL INFILE.",
-   &opt_local_infile, &opt_local_infile, 0, GET_BOOL, OPT_ARG, 0, 0, 0, 0, 0, 0},
+   &opt_local_infile, &opt_local_infile, 0, GET_BOOL, OPT_ARG, 1, 0, 0, 0, 0, 0},
   {"no-beep", 'b', "Turn off beep on error.", &opt_nobeep,
    &opt_nobeep, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"host", 'h', "Connect to host.", &current_host,
@@ -1958,6 +2075,14 @@ static struct my_option my_long_options[] =
    NO_ARG, 0, 0, 0, 0, 0, 0},
   { "proxy-mode", OPT_PROXY_MODE, "Proxy mode is not support getObServerVersion.",
    &is_proxymode, &is_proxymode, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
+  { "ob-disable-commands", OPT_OB_DISABLE_COMMANDS, "disable commands. example: --ob-disable-commands=connect,conn",
+    &ob_disable_commands_str,&ob_disable_commands_str, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
+  { "ob-service-name", OPT_OB_SERVICE_NAME, "service name. example: --ob-service-name=TEST",
+    &ob_service_name_str,&ob_service_name_str, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
+  { "proxy_user", OPT_OB_PROXY_USER , "proxy user. example --proxy_user=test",
+    &ob_proxy_user_str, &ob_proxy_user_str,0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
+  { "socket5_proxy", OPT_OB_SOCKET5_PROXY , "socket5 proxy. example --socket5_proxy=[host],[port],[user],[pwd]",
+    &ob_socket5_proxy_str, &ob_socket5_proxy_str,0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -2311,7 +2436,8 @@ static int read_and_execute(bool interactive)
 			     "    `> " :
 			     "    \"> "));
       if (opt_outfile && glob_buffer.is_empty())
-	fflush(OUTFILE);
+	    fflush(OUTFILE);
+      is_source_oracle = 0;
 
 #if defined(__WIN__)
       tee_fputs(prompt, stdout);
@@ -2369,14 +2495,25 @@ static int read_and_execute(bool interactive)
     
     //support oracle mode prompt
     char *text = NULL;
-    if (mysql.oracle_mode && (named_cmds || glob_buffer.is_empty()) &&
-      !ml_comment && !in_string && prompt_cmd_oracle(line, &text)) {
+    if (mysql.oracle_mode && !ml_comment && !in_string && glob_buffer.is_empty() && prompt_cmd_oracle(line, &text)) {
       if (text == NULL) {
         text = (char*)"";
       }
       tee_puts(text, stdout);
       continue;
     }
+
+    //support oracle mode sqlblanklines, except pl 
+    if (mysql.oracle_mode && !is_sqlblanklines_oracle && !glob_buffer.is_empty()){
+      char *p = line;
+      while (my_isspace(charset_info, *p)) p++;
+
+      if (strlen(p) == 0 && 0 != (regexec(&pl_escape_sql_re, glob_buffer.c_ptr_safe(), 0, 0, 0))) {
+        glob_buffer.length(0);
+        continue;
+      }
+    }
+    
 
     /*
       Check if line is a mysql command line
@@ -2465,7 +2602,7 @@ static COMMANDS *find_command(char cmd_char)
   else
     index= get_command_index(cmd_char);
 
-  if (index >= 0)
+  if (index >= 0 && is_command_valid(commands[index].name))
   {
     DBUG_PRINT("exit",("found command: %s", commands[index].name));
     DBUG_RETURN(&commands[index]);
@@ -2540,7 +2677,7 @@ static COMMANDS *find_command(char *name)
     }
   }
 
-  if (index >= 0)
+  if (index >= 0 && is_command_valid(commands[index].name))
   {
     DBUG_PRINT("exit", ("found command: %s", commands[index].name));
     DBUG_RETURN(&commands[index]);
@@ -2558,6 +2695,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
   bool need_space= 0;
   bool ss_comment= 0;
   bool is_slash = 0;
+  bool is_cmd = 0;
   DBUG_ENTER("add_line");
 
   if (!line[0] && buffer.is_empty())
@@ -2568,13 +2706,9 @@ static bool add_line(String &buffer, char *line, size_t line_length,
 #endif
   char *end_of_line= line + line_length;
   
-  for (pos = line; pos < end_of_line; pos++) {
-    if (*pos == '/')
-      is_slash = 1;
-    if (*pos != '\t' && *pos != ' ' && *pos != '/') {
-      is_slash = 0;
-      break;
-    }
+  switch (is_cmd_line(line, line_length)) {
+  case IS_CMD_SLASH: is_slash = true; break;
+  case IS_CMD_LINE: is_cmd = true; break;
   }
 
   for (pos= out= line; pos < end_of_line; pos++)
@@ -2621,6 +2755,13 @@ static bool add_line(String &buffer, char *line, size_t line_length,
 	*out++= (char) inchar;
 	continue;
       }
+      //fix oracle mode select json_array('{"data":'\e'}') from dual;
+      if (mysql.oracle_mode && (*is_pl_escape_sql || !is_cmd )) {
+        *out++ = '\\';
+        *out++ = (char)inchar;
+        continue;
+      }
+
       if ((com= find_command((char) inchar)))
       {
         // Flush previously accepted characters
@@ -2714,9 +2855,8 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       }
 
       if (preserve_comments && ((*pos == '#' && !mysql.oracle_mode) ||
-                                ((*pos == '-') &&
-                                 (pos[1] == '-') /*&&
-                                 my_isspace(charset_info, pos[2])*/)))
+                                (((*pos == '-') && (pos[1] == '-') && mysql.oracle_mode) ||
+                                 ((*pos == '-') && (pos[1] == '-') && my_isspace(charset_info, pos[2])))))
       {
         // Add trailing single line comments to this statement
         buffer.append(pos);
@@ -2745,7 +2885,8 @@ static bool add_line(String &buffer, char *line, size_t line_length,
     else if (!*ml_comment &&
              (!*in_string &&
               ((inchar == '#' && !mysql.oracle_mode)||
-               (inchar == '-' && pos[1] == '-' //&&
+               (inchar == '-' && pos[1] == '-' && mysql.oracle_mode) ||
+               (inchar == '-' && pos[1] == '-' &&
                /*
                  The third byte is either whitespace or is the end of
                  the line -- which would occur only because of the
@@ -2755,8 +2896,8 @@ static bool add_line(String &buffer, char *line, size_t line_length,
                  isn't a whitespace after. (This makes it easier to run
                  mysql-test-run cases through the client)
                */
-                /*((my_isspace(charset_info,pos[2]) || !pos[2]) ||
-                 (buffer.is_empty() && out == line))*/))))
+                ((my_isspace(charset_info,pos[2]) || !pos[2]) ||
+                 (buffer.is_empty() && out == line))))))
     {
       // Flush previously accepted characters
       if (out != line)
@@ -2768,8 +2909,6 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       // comment to end of line
       if (preserve_comments)
       {
-        bool started_with_nothing= !buffer.length();
-
         buffer.append(pos);
 
         /*
@@ -2777,7 +2916,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
           client commands (delimiter, status, etc) will be interpreted on
           the next line.
         */
-        if (started_with_nothing)
+        if (is_global_comment(&buffer))
         {
           if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
             DBUG_RETURN(1);
@@ -2818,6 +2957,14 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       {
         buffer.append(line, (uint32) (out - line));
         out= line;
+      }
+
+      if (preserve_comments) {
+        if (is_global_comment(&buffer)) {
+          if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
+            DBUG_RETURN(1);
+          buffer.length(0);
+        }
       }
       // Consumed a 2 chars or more, and will add 1 at most,
       // so using the 'line' buffer to edit data in place is ok.
@@ -3281,24 +3428,22 @@ static int reconnect(void)
 static void get_current_db()
 {
   MYSQL_RES *res;
+  const char *sql = NULL;
 
   /* If one_database is set, current_db is not supposed to change. */
   if (one_database)
     return;
 
-  const char *sql = NULL;
   if (mysql.oracle_mode) {
     sql = "SELECT (SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')) FROM SYS.DUAL";
   } else {
     sql = "SELECT DATABASE()";
   }
 
-
   my_free(current_db);
   current_db= NULL;
   /* In case of error below current_db will be NULL */
-  if (!mysql_query(&mysql, sql) &&
-      (res= mysql_use_result(&mysql)))
+  if (!mysql_query(&mysql, sql) && (res= mysql_use_result(&mysql)))
   {
     MYSQL_ROW row= mysql_fetch_row(res);
     if (row && row[0])
@@ -3474,6 +3619,9 @@ com_help(String *buffer __attribute__((unused)),
     put_info("Note that all text commands must be first on line and end with ';'",INFO_INFO);
   for (i = 0; commands[i].name; i++)
   {
+    if (!is_command_valid(commands[i].name)) {
+      continue;
+    }
     end= strmov(buff, commands[i].name);
     for (j= (int)strlen(commands[i].name); j < 10; j++)
       end= strmov(end, " ");
@@ -3543,9 +3691,6 @@ com_go(String *buffer,char *line __attribute__((unused)))
   uint		error= 0;
   int           err= 0;
 
-  my_bool is_dbms_enable_sql = 0;
-  my_bool is_dbms_disable_sql = 0;
-
   interrupted_query= 0;
   if (!status.batch)
   {
@@ -3569,8 +3714,45 @@ com_go(String *buffer,char *line __attribute__((unused)))
     buffer->length(0);				// Remove query on error
     return opt_reconnect ? -1 : 1;          // Fatal error
   }
-  if (verbose)
-    (void) com_print(buffer,0);
+
+  if (mysql.oracle_mode){
+    //oracle mode source supprt echo
+    if (verbose || (is_echo_oracle && is_source_oracle)) {
+      if (is_termout_oracle_enable(&mysql))
+        (void)com_print(buffer, 0);
+    }
+  } else {
+    if (verbose)
+      (void)com_print(buffer, 0);
+  }
+
+  if (mysql.oracle_mode) {
+    String newbuffer;
+    /*set cmd oracle return 1 support set cmd ok, 0 unknown cmd*/
+    if (set_cmd_oracle(buffer->c_ptr_safe()))
+      return 0;
+    if (set_param_oracle(buffer->c_ptr_safe()))
+      return 0;
+
+    //oracle mode define '&' replace
+    if (is_define_oracle){
+      newbuffer.length(0);
+      if (scan_define_oracle(buffer, &newbuffer)){
+        buffer->length(0);
+        buffer->append(newbuffer);
+      }
+    }
+
+    //execute ...
+    newbuffer.length(0);
+    if (exec_cmd_oracle(buffer, &newbuffer)) {
+      buffer->length(0);
+      buffer->append(newbuffer);
+    }
+
+    //handle pl_show_errors_sql_re, pl_create_sql_re
+    handle_oracle_sql(&mysql, buffer);
+  }
 
   if (skip_updates &&
       (buffer->length() < 4 || my_strnncoll(charset_info,
@@ -3583,160 +3765,8 @@ com_go(String *buffer,char *line __attribute__((unused)))
 
   timer= microsecond_interval_timer();
   executing_query= 1;
-
-  regmatch_t subs[NS];
-  if (mysql.oracle_mode && !(regexec(&dbms_enable_re, buffer->c_ptr_safe(), (size_t)0, NULL, 0))) {
-    is_dbms_enable_sql = 1;
-    error = mysql_real_query_for_lazy(dbms_enable_buffer.ptr(), dbms_enable_buffer.length());
-  } else if (mysql.oracle_mode && !(regexec(&dbms_disable_re, buffer->c_ptr_safe(), (size_t)0, NULL, 0))) {
-    is_dbms_disable_sql = 1;
-    error = mysql_real_query_for_lazy(dbms_disable_buffer.ptr(), dbms_disable_buffer.length());
-  } else if (mysql.oracle_mode && !(regexec(&pl_show_errors_sql_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))) {
-    bool is_need_free_type = false;
-    bool is_need_free_object = false;
-    bool is_need_free_schema = false;
-
-    if (-1 != subs[show_suffix_offset].rm_so && -1 != subs[show_suffix_offset].rm_eo) {
-      pl_type_len = subs[show_type_offset].rm_eo - subs[show_type_offset].rm_so;
-      pl_type = my_strndup( buffer->c_ptr_safe() + subs[show_type_offset].rm_so,
-        pl_type_len, MYF(MY_WME));
-      mytoupper(pl_type);
-      is_need_free_type = true;
-
-      pl_object_len = subs[show_object_offset].rm_eo - subs[show_object_offset].rm_so;
-      pl_object = buffer->c_ptr_safe() + subs[show_object_offset].rm_so;
-      if (-1 == subs[show_object_quote_offset].rm_eo || -1 == subs[show_object_quote_offset].rm_so) {
-        pl_object = my_strndup(pl_object, pl_object_len, MYF(MY_WME));
-        mytoupper(pl_object);
-        is_need_free_object = true;
-      }
-
-      if (-1 != subs[show_schema_offset].rm_so || -1 != subs[show_schema_offset].rm_eo) {
-        pl_schema_len = subs[show_schema_offset].rm_eo - subs[show_schema_offset].rm_so;
-        pl_schema = buffer->c_ptr_safe() + subs[show_schema_offset].rm_so;
-        if (-1 == subs[show_schema_quote_offset].rm_eo || -1 == subs[show_schema_quote_offset].rm_so) {
-          pl_schema = my_strndup(pl_schema, pl_schema_len, MYF(MY_WME));
-          mytoupper(pl_schema);
-          is_need_free_schema = true;
-        }
-      } else {
-        pl_schema = current_db;
-        pl_schema_len = strlen(pl_schema);
-      }
-    } else {
-      pl_schema = pl_last_schema == NULL ? current_db : pl_last_schema;
-      pl_schema_len = strlen(pl_schema);
-
-      pl_type = pl_last_type;
-      pl_type_len = 0;
-      if (NULL != pl_type) {
-        pl_type_len = strlen(pl_last_type);
-      }
-
-      pl_object = pl_last_object;
-      pl_object_len = 0;
-      if (NULL != pl_object) {
-        pl_object_len = strlen(pl_last_object);
-      }
-    }
-
-    #define GET_ERRORS_MAX_SQL_LENGTH 512
-    char sql[GET_ERRORS_MAX_SQL_LENGTH] = { '\0' };
-    my_snprintf(sql, GET_ERRORS_MAX_SQL_LENGTH, pl_get_errors_sql,
-      pl_object_len, pl_object, pl_type_len, pl_type, pl_schema_len, pl_schema);
-
-    if (is_need_free_type) {
-      my_free(pl_type);
-    }
-    if (is_need_free_object) {
-      my_free(pl_object);
-    }
-    if (is_need_free_schema) {
-      my_free(pl_schema);
-    }
-
-    error = mysql_real_query_for_lazy(sql, strlen(sql));
-  } else if (mysql.oracle_mode && 0 == (regexec(&num_width_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))) {
-    if (-1 != subs[0].rm_so && -1 != subs[0].rm_eo) {
-      int index = subs[0].rm_eo;
-      bool is_valid = TRUE;
-      uint value = 0;
-
-      for (; index < (int)buffer->length(); index++) {
-        char ch = (char )(buffer->c_ptr_safe() + index)[0];
-        if ('\n' == ch || ';' == ch)
-          break;
-        if ( '0' > ch || '9' < ch)
-          is_valid = FALSE;
-        else
-          value = 10 * value + (uint)(ch - '0');
-        if (value > 128) //not exceed 128
-          break;
-      }
-
-      if (is_valid) {
-        if (value < 2 || value > 128) {
-          // SP2-0267: numwidth option 349 out of range (2 through 128)
-          return put_info("SP2-0267: numwidth option 349 out of range (2 through 128)\n",INFO_ERROR);
-        } else {
-          obclient_num_width = value;
-        }
-      } else {
-        // SP2-0268: numwidth option not a valid number
-        return put_info("SP2-0268: numwidth option not a valid number\n",INFO_ERROR);
-      }
-    }
-  } else if (mysql.oracle_mode && 0 == (regexec(&num_format_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))) {
-    return put_info("SP2: set num format not supported\n",INFO_ERROR);
-  } else if (mysql.oracle_mode && 0 == (regexec(&column_format_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))) {
-    return put_info("SP2: column format not supported\n",INFO_ERROR);
-  } else {
-    if (mysql.oracle_mode && 0 == (regexec(&pl_create_sql_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))) {
-      my_free(pl_last_type);
-      pl_last_type = my_strndup(buffer->c_ptr_safe() + subs[create_type_offset].rm_so,
-        subs[create_type_offset].rm_eo - subs[create_type_offset].rm_so, MYF(MY_WME));
-      mytoupper(pl_last_type);
-
-      my_free(pl_last_object);
-      pl_last_object = NULL;
-      if (-1 != subs[create_object_offset].rm_eo && -1 != subs[create_object_offset].rm_so) {
-        pl_last_object = my_strndup( buffer->c_ptr_safe() + subs[create_object_offset].rm_so,
-          subs[create_object_offset].rm_eo - subs[create_object_offset].rm_so, MYF(MY_WME));
-        mytoupper(pl_last_object);
-      }
-
-      if (-1 != subs[create_object_quote_offset].rm_eo && -1 != subs[create_object_quote_offset].rm_so) {
-        char buf[1024] = { 0 };
-        char* p_in = buffer->c_ptr_safe() + subs[create_object_quote_offset].rm_so;
-        int p_in_len = subs[create_object_quote_offset].rm_eo - subs[create_object_quote_offset].rm_so;
-        fmt_str(p_in, p_in_len, buf, 1024);
-        my_free(pl_last_object);
-        pl_last_object = NULL;
-        pl_last_object = my_strndup(buf, strlen(buf), MYF(MY_WME));
-        //mytoupper(pl_last_object);
-      }
-
-      my_free(pl_last_schema);
-      pl_last_schema = NULL;
-      if (-1 != subs[create_schema_offset].rm_eo && -1 != subs[create_schema_offset].rm_so) {
-        pl_last_schema = my_strndup(buffer->c_ptr_safe() + subs[create_schema_offset].rm_so,
-          subs[create_schema_offset].rm_eo - subs[create_schema_offset].rm_so, MYF(MY_WME));
-        mytoupper(pl_last_schema);
-      }
-      if (-1 != subs[create_schema_quote_offset].rm_eo && -1 != subs[create_schema_quote_offset].rm_so) {
-        char buf[1024] = { 0 };
-        char* p_in = buffer->c_ptr_safe() + subs[create_schema_quote_offset].rm_so;
-        int p_in_len = subs[create_schema_quote_offset].rm_eo - subs[create_schema_quote_offset].rm_so;
-        fmt_str(p_in, p_in_len, buf, 1024);
-        my_free(pl_last_schema);
-        pl_last_schema = NULL;
-        pl_last_schema = my_strndup(buf, strlen(buf), MYF(MY_WME));
-        //mytoupper(pl_last_schema);
-      }
-    }
-    error = mysql_real_query_for_lazy(buffer->ptr(), buffer->length());
-  }
-
+  
+  error = mysql_real_query_for_lazy(buffer->ptr(), buffer->length());
   report_progress_end();
 
 #ifdef HAVE_READLINE
@@ -3835,10 +3865,26 @@ com_go(String *buffer,char *line __attribute__((unused)))
 	*pos++= 's';
     }
     strmov(pos, time_buff);
-    put_info(buff,INFO_RESULT);
-    if (mysql_info(&mysql))
-      put_info(mysql_info(&mysql),INFO_RESULT);
-    put_info("",INFO_RESULT);			// Empty row
+
+    if (mysql.oracle_mode){
+      if (is_feedback_oracle && is_termout_oracle_enable(&mysql)){
+        if (feedback_int_oracle <= 0){
+          put_info(buff, INFO_RESULT);
+        } else if (!result){
+          put_info(buff, INFO_RESULT);
+        } else if (result && (mysql_num_rows(result)==0 || mysql_num_rows(result) >= (my_ulonglong)feedback_int_oracle)){
+          put_info(buff, INFO_RESULT);
+        }
+      }
+    } else {
+      put_info(buff, INFO_RESULT);
+    }
+
+    if (is_termout_oracle_enable(&mysql)) {
+      if (mysql_info(&mysql))
+        put_info(mysql_info(&mysql), INFO_RESULT);
+      put_info("", INFO_RESULT);			// Empty row
+    }
 
     if (result && !mysql_eof(result))	/* Something wrong when using quick */
       error= put_error(&mysql);
@@ -3859,50 +3905,8 @@ end:
       (mysql.server_status & SERVER_STATUS_DB_DROPPED))
     get_current_db();
 
-  if (is_dbms_enable_sql) {
-    if (!error) {
-      dbms_serveroutput = 1;
-    }
-  } else if (is_dbms_disable_sql) {
-    if (!error) {
-      dbms_serveroutput = 0;
-    }
-  } else if (dbms_serveroutput) {
-    uint inner_error = 0;
-    do {
-      if (NULL == dbms_stmt && !(dbms_stmt = mysql_stmt_init(&mysql))) {
-        inner_error = put_error(&mysql);
-      } else if (!dbms_prepared && mysql_stmt_prepare(dbms_stmt, dbms_get_line, strlen(dbms_get_line))) {
-        inner_error = put_stmt_error(&mysql, dbms_stmt);
-      } else {
-        dbms_prepared = 1;
-
-        if (mysql_stmt_bind_param(dbms_stmt, dbms_ps_params)) {
-          inner_error = put_stmt_error(&mysql, dbms_stmt);
-        } else if (mysql_stmt_execute(dbms_stmt)) {
-          inner_error = put_stmt_error(&mysql, dbms_stmt);
-        } else if (mysql_stmt_bind_result(dbms_stmt, dbms_rs_bind)) {
-          inner_error = put_stmt_error(&mysql, dbms_stmt);
-        } else if (mysql_stmt_fetch(dbms_stmt)) {
-          inner_error = put_stmt_error(&mysql, dbms_stmt);
-        } else {
-          if (!error && dbms_status == '0' && !(*dbms_rs_bind[0].is_null)) {
-            //put_info(dbms_line_buffer, INFO_RESULT);
-            tee_puts(dbms_line_buffer, stdout); //dbms enable, Certain output
-          }
-
-          mysql_stmt_free_result(dbms_stmt);
-          err = mysql_stmt_next_result(dbms_stmt);
-          if (err == 0) {
-            inner_error = put_info(ER(CR_UNKNOWN_ERROR), INFO_ERROR, CR_UNKNOWN_ERROR,
-              unknown_sqlstate, mysql.oracle_mode);
-          } else if (err > 0) {
-            if (dbms_stmt->state != MYSQL_STMT_FETCH_DONE)
-              inner_error = put_stmt_error(&mysql, dbms_stmt);
-          }
-        }
-      }
-    } while (!inner_error && dbms_status == '0');
+  if (dbms_serveroutput) {
+    call_dbms_get_line(&mysql, error);
   }
 
   executing_query= 0;
@@ -4626,14 +4630,14 @@ print_table_data(MYSQL_RES *result)
     uint length= column_names ? field->name_length : 0;
     if (quick) {
       if (mysql.oracle_mode) {
-        // 对于oracle模式， 使用max_length, max_length会在use result中改变
+        // for oracle mode, use max_length, max_length for use result change
         length= MY_MAX(length, field->max_length);
       } else {
         length= MY_MAX(length,field->length);
       }
     } else
       length= MY_MAX(length,field->max_length);
-    if (length < 4 && !IS_NOT_NULL(field->flags))
+    if (length < 4 /*&& !IS_NOT_NULL(field->flags)*/)
       length=4;					// Room for "NULL"
     if (mysql.oracle_mode && is_binary_field_oracle(field)) {
       length = length * 2;
@@ -4646,30 +4650,36 @@ print_table_data(MYSQL_RES *result)
     separator.append('+');
   }
   separator.append('\0');                       // End marker for \0
-  tee_puts((char*) separator.ptr(), PAGER);
-  if (column_names)
-  {
-    mysql_field_seek(result,0);
-    (void) tee_fputs("|", PAGER);
-    for (uint off=0; (field = mysql_fetch_field(result)) ; off++)
+
+  if (is_termout_oracle_enable(&mysql)) {
+    tee_puts((char*)separator.ptr(), PAGER);
+    if (column_names)
     {
-      size_t name_length= (uint) strlen(field->name);
-      size_t numcells= charset_info->cset->numcells(charset_info,
-                                                  field->name,
-                                                  field->name + name_length);
-      size_t display_length= field->max_length + name_length - numcells;
-      tee_fprintf(PAGER, " %-*s |",(int) MY_MIN(display_length,
-                                                MAX_COLUMN_LENGTH),
-                  field->name);
+      mysql_field_seek(result, 0);
+      (void)tee_fputs("|", PAGER);
+      for (uint off = 0; (field = mysql_fetch_field(result)); off++)
+      {
+        size_t name_length = (uint)strlen(field->name);
+        size_t numcells = charset_info->cset->numcells(charset_info,
+          field->name,
+          field->name + name_length);
+        size_t display_length = field->max_length + name_length - numcells;
+        tee_fprintf(PAGER, " %-*s |", (int)MY_MIN(display_length,
+          MAX_COLUMN_LENGTH),
+          field->name);
+      }
+      (void)tee_fputs("\n", PAGER);
+      tee_puts((char*)separator.ptr(), PAGER);
     }
-    (void) tee_fputs("\n", PAGER);
-    tee_puts((char*) separator.ptr(), PAGER);
   }
 
   while ((cur= mysql_fetch_row(result)))
   {
     if (interrupted_query)
       break;
+    if (!is_termout_oracle_enable(&mysql))
+      continue;
+    
     ulong *lengths= mysql_fetch_lengths(result);
     (void) tee_fputs("| ", PAGER);
     mysql_field_seek(result, 0);
@@ -4745,7 +4755,9 @@ print_table_data(MYSQL_RES *result)
     }
     (void) tee_fputs("\n", PAGER);
   }
-  tee_puts((char*) separator.ptr(), PAGER);
+  if (is_termout_oracle_enable(&mysql)) {
+    tee_puts((char*)separator.ptr(), PAGER);
+  }
   my_afree((uchar*) num_flag);
 }
 
@@ -5155,19 +5167,25 @@ print_tab_data(MYSQL_RES *result)
   MYSQL_FIELD	*field;
   ulong		*lengths;
 
-  if (opt_silent < 2 && column_names)
-  {
-    int first=0;
-    while ((field = mysql_fetch_field(result)))
+  if (is_termout_oracle_enable(&mysql)) {
+    if (opt_silent < 2 && column_names)
     {
-      if (first++)
-	(void) tee_fputs("\t", PAGER);
-      (void) tee_fputs(field->name, PAGER);
+      int first = 0;
+      while ((field = mysql_fetch_field(result)))
+      {
+        if (first++)
+          (void)tee_fputs("\t", PAGER);
+        (void)tee_fputs(field->name, PAGER);
+      }
+      (void)tee_fputs("\n", PAGER);
     }
-    (void) tee_fputs("\n", PAGER);
   }
+  
   while ((cur = mysql_fetch_row(result)))
   {
+    if (!is_termout_oracle_enable(&mysql))
+      continue;
+
     lengths=mysql_fetch_lengths(result);
     field= mysql_fetch_fields(result);
     if (mysql.oracle_mode && is_binary_field_oracle(&field[0]))
@@ -5197,8 +5215,8 @@ com_tee(String *buffer __attribute__((unused)),
 {
   char file_name[FN_REFLEN], *end, *param;
 
-  if (status.batch)
-    return 0;
+  //if (status.batch)
+  //  return 0;
   while (my_isspace(charset_info,*line))
     line++;
   if (!(param = strchr(line, ' '))) // if outfile wasn't given, use the default
@@ -5454,6 +5472,9 @@ com_connect(String *buffer, char *line)
           if (tmp) {
             my_free(current_host);
             current_host = my_strdup(tmp, MYF(MY_WME));
+            my_free(current_host_success);
+            current_host_success = my_strdup(tmp, MYF(MY_WME));
+
             tmp = get_arg_by_index(buff, i++);
             if (tmp) {
               errno = 0;
@@ -5461,11 +5482,11 @@ com_connect(String *buffer, char *line)
               ulonglong port;
               port = strtoull(tmp, &endchar, 10);
               if (errno == ERANGE) {
-                my_getopt_error_reporter(ERROR_LEVEL,
-                  "Incorrect unsigned integer value: '%s'", tmp);
+                my_getopt_error_reporter(ERROR_LEVEL, "Incorrect unsigned integer value: '%s'", tmp);
                 return 1;
               } else {
-                opt_mysql_port = port;
+                opt_mysql_port = (uint)port;
+                current_port_success = (int)port;
               }
             }
           }
@@ -5484,8 +5505,10 @@ com_connect(String *buffer, char *line)
         tmp= get_arg(buff, GET_NEXT);
         if (tmp)
         {
-	        my_free(current_host);
-	        current_host=my_strdup(tmp,MYF(MY_WME));
+          my_free(current_host);
+          current_host=my_strdup(tmp,MYF(MY_WME));
+          my_free(current_host_success);
+          current_host_success = my_strdup(tmp, MYF(MY_WME));
         }
       } else {
         /* Quick re-connect */
@@ -5493,10 +5516,12 @@ com_connect(String *buffer, char *line)
       }
     }
     buffer->length(0);				// command used
+    opt_mysql_port = current_port_success;
+    error = sql_connect(current_host_success, current_db, current_user, opt_password, 100);
   } else {
     opt_rehash= 0;
+    error = sql_connect(current_host, current_db, current_user, opt_password, 0);
   }
-  error=sql_connect(current_host,current_db,current_user,opt_password,0);
   opt_rehash= save_rehash;
 
   if (connected)
@@ -5507,13 +5532,11 @@ com_connect(String *buffer, char *line)
 
     sprintf(buff,"Connection id:    %lu",mysql_thread_id(&mysql));
     put_info(buff,INFO_INFO);
-    sprintf(buff,"Current database: %.128s\n",
-	    current_db ? current_db : "*** NONE ***");
+    sprintf(buff,"Current database: %.128s\n", current_db ? current_db : "*** NONE ***");
     put_info(buff,INFO_INFO);
   }
   return error;
 }
-
 
 static int com_source(String *buffer __attribute__((unused)),
                       char *line)
@@ -5524,6 +5547,7 @@ static int com_source(String *buffer __attribute__((unused)),
   STATUS old_status;
   FILE *sql_file;
   my_bool save_ignore_errors;
+  is_source_oracle = 1;
 
   /* Skip space from file name */
   while (my_isspace(charset_info,*line))
@@ -5911,16 +5935,105 @@ char *mysql_authentication_dialog_ask(MYSQL *mysql, int type,
   return buf;
 }
 
-static int
-sql_real_connect(char *host,char *database,char *user,char *password,
-		 uint silent)
+static void parse_socket5_proxy(char *socket5_proxy, char**host, int*port, char **user, char**pwd)
 {
+  char *p = socket5_proxy, *str = NULL;
+  int idx = 0;
+  my_bool in_string = 0;
+  my_bool split = 0;
+
+  str = p;
+  while (*p != 0) {
+    if (*p == '[') {
+      in_string = 1;
+      str = p + 1;
+    } else if (*p == ']' && in_string == 1) {
+      in_string = 0;
+      *p = 0;
+    } else if (*p == ',' && in_string == 0) {
+      *p = 0;
+      if (idx == 0) {
+        *host = str;
+      } else if (idx == 1) {
+        *port = atoi(str);
+      } else if (idx == 2) {
+        *user = str;
+      } else if (idx == 3) {
+        *pwd = str;
+      }
+      str = p + 1;
+      idx++;
+    }
+    p++;
+  }
+  if (idx == 0) {
+    *host = str;
+  } else if (idx == 1) {
+    *port = atoi(str);
+  } else if (idx == 2) {
+    *user = str;
+  } else if (idx == 3) {
+    *pwd = str;
+  }
+}
+static void parse_multi_host(char *host, std::map<char*, int>* mhost)
+{
+  char *p = host, *str = NULL;
+  char *myhost = NULL, *myport = NULL;
+  my_bool in_string = 0;
+  if (NULL == host || NULL == mhost) {
+    return;
+  }
+
+  myhost = p;
+  while (*p != 0) {
+    if (*p == '[') {
+      in_string = 1;
+      myhost = p + 1;
+    } else if (*p == ']' && in_string == 1) {
+      in_string = 0;
+      *p = 0;
+    } else if (*p == ':' && in_string == 0) {
+      myport = p + 1;
+      *p = 0;
+    } else if (*p == ',' && in_string == 0) {
+      myhost = p + 1;
+      myport = NULL;
+    }
+    if (myhost && myport) {
+      int port = atoi(myport);
+      if (port > 0) {
+        (*mhost)[myhost] = port;
+      }
+      myhost = NULL;
+      myport = NULL;
+    }
+    p++;
+  }
+}
+
+static int sql_real_connect(char *host,char *database,char *user,char *password, uint silent)
+{
+  String socket5_proxy;
   if (connected)
   {
     connected= 0;
     mysql_close(&mysql);
   }
   mysql_init(&mysql);
+
+  if (ob_socket5_proxy_str && *ob_socket5_proxy_str) {
+    char *socket5_host = NULL;
+    char *socket5_user = NULL;
+    char *socket5_pwd = NULL;
+    int socket5_port = 0;
+    socket5_proxy.append(ob_socket5_proxy_str);
+    parse_socket5_proxy(socket5_proxy.c_ptr_safe(), &socket5_host, &socket5_port, &socket5_user, &socket5_pwd);
+    if (socket5_host && socket5_port > 0) {
+      ob_set_socket5_proxy(&mysql, 0, socket5_host, socket5_port, socket5_user, socket5_pwd);
+    }
+  }
+
   if (opt_init_command)
     mysql_options(&mysql, MYSQL_INIT_COMMAND, opt_init_command);
   if (opt_connect_timeout)
@@ -5955,8 +6068,8 @@ sql_real_connect(char *host,char *database,char *user,char *password,
                   connect_flag | CLIENT_MULTI_STATEMENTS))
   {
     if (!silent ||
-	(mysql_errno(&mysql) != CR_CONN_HOST_ERROR &&
-	 mysql_errno(&mysql) != CR_CONNECTION_ERROR))
+      (mysql_errno(&mysql) != CR_CONN_HOST_ERROR &&
+        mysql_errno(&mysql) != CR_CONNECTION_ERROR))
     {
       (void) put_error(&mysql);
       (void) fflush(stdout);
@@ -5989,7 +6102,118 @@ sql_real_connect(char *host,char *database,char *user,char *password,
 #endif
   return 0;
 }
+static int sql_real_connect_multi(const char* tns_name, ObClientLbAddressList *list, char *database, char *user, char *password, uint silent)
+{
+  bool success;
+  ObClientLbAddress address;
+  ObClientLbConfig config;
+  String socket5_proxy;
 
+  memset(&config, 0, sizeof(config));
+  memset(&address, 0, sizeof(address));
+
+  if (connected) {
+    connected = 0;
+    mysql_close(&mysql);
+  }
+  mysql_init(&mysql);
+
+  if (ob_socket5_proxy_str && *ob_socket5_proxy_str) {
+    char *socket5_host = NULL;
+    char *socket5_user = NULL;
+    char *socket5_pwd = NULL;
+    int socket5_port = 0;
+    socket5_proxy.append(ob_socket5_proxy_str);
+    parse_socket5_proxy(socket5_proxy.c_ptr_safe(), &socket5_host, &socket5_port, &socket5_user, &socket5_pwd);
+    if (socket5_host && socket5_port > 0) {
+      ob_set_socket5_proxy(&mysql, 0, socket5_host, socket5_port, socket5_user, socket5_pwd);
+    }
+  }
+
+  config.black_remove_strategy = 2001;
+  config.black_remove_timeout = 0;
+  config.black_append_strategy = 3002;
+  config.black_append_duration = 60000;
+  config.black_append_retrytimes = 1;
+  config.retry_all_downs = 0;
+
+  if (opt_init_command)
+    config.mysql_init_command = opt_init_command;
+  if (opt_connect_timeout)
+    config.mysql_connect_timeout = opt_connect_timeout;
+  if (opt_compress)
+    config.mysql_is_compress = 1;
+  if (using_opt_local_infile) {
+    config.mysql_is_local_infile = 1;
+    config.mysql_local_infile = opt_local_infile;
+  }
+  if (opt_protocol)
+    config.mysql_opt_protocol = opt_protocol;
+  if (opt_secure_auth)
+    config.mysql_opt_secure_auth = opt_secure_auth;
+#if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
+  if (opt_use_ssl) {
+    config.mysql_opt_use_ssl = opt_use_ssl;
+    config.mysql_opt_ssl_key = opt_ssl_key;
+    config.mysql_opt_ssl_cert = opt_ssl_cert;
+    config.mysql_opt_ssl_ca = opt_ssl_ca;
+    config.mysql_opt_ssl_capath = opt_ssl_capath;
+    config.mysql_opt_ssl_cipher = opt_ssl_cipher;
+    config.mysql_opt_ssl_crl = opt_ssl_crl;
+    config.mysql_opt_ssl_crlpath = opt_ssl_crlpath;
+    config.mysql_opt_tls_version = opt_tls_version;
+  }
+#endif
+  config.mysql_opt_ssl_verify_server_cert = opt_ssl_verify_server_cert;
+
+  if (!strcmp(default_charset, MYSQL_AUTODETECT_CHARSET_NAME))
+    default_charset = (char *)my_default_csname();
+  if (strncasecmp(default_charset, "GB18030-2022", 12) == 0) {
+    default_charset = (char*)"GB18030";
+  }
+  config.mysql_charset_name = default_charset;
+  //oracle proxy user
+  if (ob_proxy_user_str && ob_proxy_user_str[0])
+    config.mysql_ob_proxy_user = ob_proxy_user_str;
+
+
+  if (NULL != ob_mysql_real_connect(&mysql, tns_name, list, &config,
+    user, password, database, NULL, connect_flag | CLIENT_MULTI_STATEMENTS, &address)) {
+    success = 1;
+    current_host_success = my_strdup(address.host, MYF(MY_WME));
+    current_port_success = address.port;
+  } else {
+    success = 0;
+  }
+
+  if (!success) {
+    int err_no = mysql_errno(&mysql);
+    if (err_no != 0) {
+      put_info(mysql_error(&mysql), INFO_ERROR, mysql_errno(&mysql), mysql_sqlstate(&mysql), mysql.oracle_mode);
+      return -1;
+    } else {
+      return -2;					// Retryable
+    }
+  }
+
+  charset_info = get_charset_by_name(mysql.charset->name, MYF(0));
+  connected = 1;
+#ifndef EMBEDDED_LIBRARY
+  mysql_options(&mysql, MYSQL_OPT_RECONNECT, &debug_info_flag);
+
+  if (mysql.client_flag & CLIENT_PROGRESS_OBSOLETE)
+    mysql_options(&mysql, MYSQL_PROGRESS_CALLBACK, (void*)report_progress);
+#else
+  {
+    my_bool reconnect = 1;
+    mysql_options(&mysql, MYSQL_OPT_RECONNECT, &reconnect);
+  }
+#endif
+#ifdef HAVE_READLINE
+  build_completion_hash(opt_rehash, 1);
+#endif
+  return 0;
+}
 
 static int
 sql_connect(char *host,char *database,char *user,char *password,uint silent)
@@ -5997,29 +6221,79 @@ sql_connect(char *host,char *database,char *user,char *password,uint silent)
   bool message=0;
   uint count=0;
   int error;
-  for (;;)
-  {
-    if ((error=sql_real_connect(host,database,user,password,wait_flag)) >= 0)
-    {
-      if (count)
-      {
-	tee_fputs("\n", stderr);
-	(void) fflush(stderr);
+  bool is_multi_host = 0;
+  String hostinfo;  //Automatically release local memory
+  std::map<char*, int> multi_host;
+  bool is_connect_cmd = 0;
+  if (silent == 100) {  //conn user@oracle/pass@//host:port
+    silent = 0;
+    is_connect_cmd = 1;
+  }
+
+  hostinfo.append(host?host:"");
+  parse_multi_host(hostinfo.c_ptr_safe(), &multi_host);
+
+  if (!is_connect_cmd && (ob_service_name_str || multi_host.size() > 0)) {
+    //-hxxx.xxx.xxx.xxx:3306,xxx.xxx.xxx.xxx:3308
+    //--ob-service-name=TEST
+    ObClientLbAddressList list;
+    memset(&list, 0, sizeof(ObClientLbAddressList));
+    int multis = multi_host.size();
+    if (multis > 0) {
+      int i = 0;
+      std::map<char*, int>::iterator iter = multi_host.begin();
+      list.address_list_count = multi_host.size();
+      list.address_list = (ObClientLbAddress*)malloc(multi_host.size() * sizeof(ObClientLbAddress));
+      memset(list.address_list, 0, multi_host.size() * sizeof(ObClientLbAddress));
+      for (iter = multi_host.begin(),i=0; iter != multi_host.end(); iter++, i++) {
+        char *p = iter->first;
+        memcpy(list.address_list[i].host, p, strlen(p));
+        list.address_list[i].port = iter->second;
       }
-      return error;
     }
-    if (!wait_flag)
-      return ignore_errors ? -1 : 1;
-    if (!message && !silent)
-    {
-      message=1;
-      tee_fputs("Waiting",stderr); (void) fflush(stderr);
+
+    error = sql_real_connect_multi(ob_service_name_str, &list, database, user, password, silent);
+    if (0 != error) {
+      if (error == -2) {
+        if (ob_service_name_str) {
+          put_info("ob-service-name invalid tnsnames.ora", INFO_ERROR, -1, 0, mysql.oracle_mode);
+        } else if (is_multi_host) {
+          put_info("-hip1:port1,ip2:port2...", INFO_ERROR, -1, 0, mysql.oracle_mode);
+        }
+      }
     }
-    (void) sleep(wait_time);
-    if (!silent)
+    if (list.address_list) {
+      free(list.address_list);
+      list.address_list = NULL;
+      list.address_list_count = 0;
+    }
+    return error;
+  } else {
+    //-hxxx.xxx.xxx.xxx -p3306
+    for (;;)
     {
-      putc('.',stderr); (void) fflush(stderr);
-      count++;
+      if ((error = sql_real_connect(host, database, user, password, wait_flag)) >= 0)
+      {
+        if (count)
+        {
+          tee_fputs("\n", stderr);
+          (void)fflush(stderr);
+        }
+        return error;
+      }
+      if (!wait_flag)
+        return ignore_errors ? -1 : 1;
+      if (!message && !silent)
+      {
+        message = 1;
+        tee_fputs("Waiting", stderr); (void)fflush(stderr);
+      }
+      (void)sleep(wait_time);
+      if (!silent)
+      {
+        putc('.', stderr); (void)fflush(stderr);
+        count++;
+      }
     }
   }
 }
@@ -6311,7 +6585,8 @@ put_info(const char *str, INFO_TYPE info_type, uint error, const char *sqlstate,
           }
         }
       } else {
-        tee_puts("ERROR: ", file);
+        tee_fprintf(file, "ERROR: ");
+        //tee_puts("ERROR: ", file);
       }
     }
     (void)tee_puts(str, file);
@@ -6392,6 +6667,12 @@ void tee_putc(int c, FILE *file)
     putc(c, OUTFILE);
 }
 
+void tee_outfile(const char *s) {
+  if (opt_outfile)
+  {
+    fputs(s, OUTFILE);
+  }
+}
 
 /** 
   Write as many as 52+1 bytes to buff, in the form of a legible duration of time.
@@ -6700,6 +6981,70 @@ static void report_progress_end()
 }
 #endif
 
+
+static my_bool is_global_comment(String *buffer)
+{
+  /*comment*/
+  my_bool ret = 1;
+  if (NULL == buffer || buffer->is_empty()) {
+    ret = 0;
+  } else {
+    //uint32 i = 0;
+    //uint32 len = buffer->length();
+    char *p = buffer->c_ptr();
+    
+    while (*p != 0 && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+      p++;
+    }
+
+    if (*p == '/' && *(p + 1) == '*') {
+      ret = 1;
+    } else if (*p == '-' && *(p + 1) == '-') {
+      ret = 1;
+    } else {
+      ret = 0;
+    }
+  }
+  return ret;
+}
+static int is_cmd_line(char *pos, size_t len){
+  int ret = 0; //1:/ 2:\s,\h...
+  size_t i = 0;
+  my_bool is_cmd = 0;
+  char first_char = 0;
+  int cmd_chars = 0;
+  int all_chars = 0;
+  for (i = 0; i < len; i++) {
+    if (pos[i] == ' ' || pos[i] == '\t' || pos[i] == '\r' || pos[i] == '\n' || pos[i]==0) {
+      continue;
+    }
+    if (first_char == 0) {
+      first_char = pos[i];
+    }
+
+    if (pos[i] == '\\') {
+      is_cmd = 1;
+      cmd_chars = 0;
+    }
+    cmd_chars++;
+    all_chars++;
+  }
+  if (first_char == '/' && all_chars == 1) {
+    ret = IS_CMD_SLASH;
+  } else if (is_cmd == 1 && cmd_chars == 2) {
+    ret = IS_CMD_LINE;
+  }
+  return ret;
+}
+static my_bool is_termout_oracle_enable(MYSQL *mysql) {
+  my_bool ret = 0;
+  if (!mysql->oracle_mode ||
+    !(mysql->oracle_mode && is_source_oracle && !is_termout_oracle)) {
+    ret = 1;
+  }
+  return ret;
+}
+
 static my_bool prompt_cmd_oracle(const char *str, char **text) {
   my_bool rst = 0;
   char *p = (char*)str;
@@ -6723,4 +7068,637 @@ static my_bool prompt_cmd_oracle(const char *str, char **text) {
  
   *text = p;
   return rst;
+}
+static my_bool exec_cmd_oracle(String *buffer, String *newbuffer) {
+  my_bool rst = 0;
+  char *p = (char*)buffer->c_ptr_safe();
+  char *exec_start = NULL, *exec_end = NULL;
+  char *start = NULL, *end = NULL;
+  int exec_len = 0, len = 0;
+  exec_end = exec_end;
+  end = end;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  exec_start = p;
+  while (*p != '\0' && !my_isspace(charset_info, *p))
+    p++;
+  exec_len = p - exec_start;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  start = p;
+  len = strlen(p);
+
+  if (exec_len < 4 || len <= 0) {
+    return rst;
+  }
+
+  if (strncasecmp("execute", exec_start, exec_len) == 0 && exec_len >= 4) {
+    rst = 1;
+    newbuffer->append("begin ");
+    newbuffer->append(start);
+    newbuffer->append("; end;");
+  }
+  return rst;
+}
+
+static int is_on_off(const char* str, int len){
+  if (strncasecmp("on", str, len)==0 && len == 2){
+    return 1;
+  } else if(strncasecmp("off", str, len) == 0 && len == 3){
+    return 0;
+  } else {
+    return -1;
+  }
+}
+static int to_digit(const char* str, int len){
+  int i = 0;
+  for(i =0; i < len; i++){
+    if (!my_isdigit(charset_info, *(str+i)))
+      return -1;
+  }
+  return atoi(str);
+}
+static my_bool set_cmd_oracle(const char *str){
+  //set define on/off/* ...
+  //set feedback on/off/n
+  //set echo on/off
+  //set sqlblanklines on/off
+  //set serveroutput on/off
+  //set heading on/off
+
+  my_bool rst = 0;
+  char *p = (char*)str;
+  char *name_start = NULL, *name_end = NULL;
+  char *start = NULL, *end = NULL;
+  int name_len = 0, len = 0;
+  name_end = name_end;
+  end = end;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  if (strncasecmp("set ", p, 4) == 0) {
+    p = p + 4;
+  } else {
+    return rst;
+  }
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  name_start = p;
+  while (*p != '\0' && !my_isspace(charset_info, *p))
+    p++;
+  name_len = p - name_start;
+
+  while (my_isspace(charset_info, *p))
+    p++;
+
+  start = p;
+  len = strlen(p);
+
+  if (name_len<=0 || len<=0){
+    return rst;
+  }
+
+  if (strncasecmp("define", name_start, name_len)==0 && name_len>=3){
+    rst = 1;
+    if (len == 1){
+      if (my_isdigit(charset_info, *start) || my_isalpha(charset_info, *start) || *start==' '||*start ==' '){
+        put_info("SP2-0272: define Characters cannot be alphanumeric or blank", INFO_INFO);
+      } else {
+        define_char_oracle = *start;
+        is_define_oracle = 1;
+      }
+    } else if (is_on_off(start, len)>=0){
+      is_define_oracle = is_on_off(start, len);
+      if (is_define_oracle==1){
+        define_char_oracle = '&';
+      }
+    } else {
+      put_info("SP2-0268: define value is invalid", INFO_INFO);
+    }
+  } else if (strncasecmp("feedback", name_start, name_len)==0 && name_len>=4){
+    rst = 1;
+    feedback_int_oracle = to_digit(start, len);
+    if (feedback_int_oracle>=0){
+      if (feedback_int_oracle>50000){
+        put_info("SP2-0267: feedback value is (0-50000)", INFO_INFO);
+      } else {
+        is_feedback_oracle = feedback_int_oracle > 0 ? 1 : 0;
+      }
+    } else if (is_on_off(start, len) >= 0) {
+      is_feedback_oracle = is_on_off(start, len);
+      feedback_int_oracle = -1;
+    } else {
+      put_info("SP2-0268: feedback value is invalid", INFO_INFO);
+    }
+  } else if (strncasecmp("echo", name_start, 4)== 0){
+    rst = 1;
+    if (is_on_off(start, len) >= 0){
+      is_echo_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: echo value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("sqlblanklines", name_start, name_len)==0 && name_len>=5){
+    rst = 1;
+    if (is_on_off(start, len) >= 0){
+      is_sqlblanklines_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: sqlblanklines value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("heading", name_start, name_len) == 0 && name_len >=3) {
+    rst = 1;
+    if (is_on_off(start, len) >= 0) {
+      column_names = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: heading value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("termout", name_start, name_len) ==0 && name_len >=4) {
+    rst = 1;
+    if (is_on_off(start, len) >= 0) {
+      is_termout_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: termout value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("pagesize", name_start, name_len) == 0 && name_len >=5) {
+    //The setting is OK, but it doesn’t actually take effect.
+    rst = 1;
+    pagesize_int_oracle = to_digit(start, len);
+  } else if (strncasecmp("trimspool", name_start, name_len) == 0 && name_len >= 4) {
+    //The setting is OK, but it doesn’t actually take effect.
+    rst = 1;
+    if (is_on_off(start, len) >= 0) {
+      is_trimspool_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: trimspool value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("exitcommit", name_start, name_len) == 0 && name_len >=5) {
+    rst = 1;
+    if (is_on_off(start, len) >= 0) {
+      is_exitcommit_oracle = is_on_off(start, len);
+    } else {
+      put_info("SP2-0265: exitcommit value is ON or OFF", INFO_INFO);
+    }
+  } else if (strncasecmp("numwidth", name_start, name_len) == 0 && name_len >= 3) {
+    rst = 1;
+    int numwidth = to_digit(start, len);
+    if (numwidth == -1) {
+      put_info("SP2-0268: numwidth option not a valid number\n", INFO_INFO);
+    } else {
+      if (numwidth < 2 || numwidth >128) {
+        put_info("SP2-0267: numwidth option 349 out of range (2 through 128)\n", INFO_INFO);
+      } else {
+        obclient_num_width = numwidth;
+      }
+    }
+  } else if (strncasecmp("numformat", name_start, name_len) == 0 && name_len >= 4) {
+    put_info("SP2: set num format not supported\n", INFO_INFO);
+  } else if (strncasecmp("serveroutput", name_start, 12) == 0) {
+    rst = 1;
+    if (is_on_off(start, len) == 1){
+      uint error = mysql_real_query_for_lazy(dbms_enable_buffer.ptr(), dbms_enable_buffer.length());
+      if (!error) {
+        dbms_serveroutput = 1;
+      } else {
+        put_info("set serveroutput on error!", INFO_ERROR);
+      }
+    } else if (is_on_off(start, len) == 0){
+      uint error = mysql_real_query_for_lazy(dbms_disable_buffer.ptr(), dbms_disable_buffer.length());
+      if (!error) {
+        dbms_serveroutput = 0;
+      } else {
+        put_info("set serveroutput off error!", INFO_ERROR);
+      }
+    } else {
+      put_info("SP2-0265: serveroutput value is ON or OFF", INFO_INFO);
+    }
+  }
+  return rst;
+}
+static my_bool set_param_oracle(const char *str) {
+  //COLUMN c1 FORMAT format
+  my_bool rst = 0;
+  regmatch_t subs[NS];
+
+  if (0 == regexec(&column_format_re, str, (size_t)NS, subs, 0)) {
+    rst = 1;
+    put_info("SP2: column xxx format not supported\n", INFO_INFO);
+  }
+  return rst;
+}
+static void get_end_str(char define, String *endstr1, String *endstr2, String *endstr3){
+  char *p = (char*)"~!@#$%^&*()+`=-{}|[]:\";'<>?,./\t\r\n\\ ";
+  endstr1->length(0);
+  endstr2->length(0);
+  endstr3->length(0);
+  while (*p!='\0'){
+    endstr1->append_char(*p);
+    if (*p != define) {
+      endstr2->append_char(*p);
+      if (!my_isspace(charset_info, *p)) {
+        endstr3->append_char(*p);
+      }
+    }
+    
+    p++;
+  }
+}
+static void get_input_str(String *varkey, String *varval, int defcount){
+#define MAX_FGETS 4096
+  char buf[MAX_FGETS] = { 0 };
+  std::map<void*, void*>::iterator iter;
+  //find from map_global
+  varval->length(0);
+  for(iter = map_global.begin(); iter != map_global.end(); iter++){
+    if (strlen((char*)(iter->first)) == varkey->length() && 0 == strncasecmp((char*)iter->first, varkey->c_ptr_safe(), varkey->length())) {
+      varval->append((char*)iter->second, strlen((char*)iter->second));
+      return;
+    }
+  }
+
+  tee_fprintf(stdout, "Please input %s val:  ", varkey->c_ptr_safe());
+  fgets(buf, MAX_FGETS, stdin);
+  if (buf[strlen(buf)-1] == '\n'){
+    buf[strlen(buf) - 1] = '\0';
+  }
+  tee_outfile(buf);
+  tee_outfile("\n");
+  varval->append(buf);
+  if (defcount>1){
+    void *key = my_malloc(strlen(varkey->c_ptr_safe())+1, MYF(MY_WME));
+    void *val = my_malloc(strlen(varval->c_ptr_safe())+1, MYF(MY_WME));
+    if (key != NULL && val != NULL){
+      strcpy((char*)key, varkey->c_ptr_safe());
+      strcpy((char*)val, varval->c_ptr_safe());
+      map_global[key] = val;
+    } else {
+      my_free(key); my_free(val);
+    }
+  }
+}
+static void free_map_global(){
+  std::map<void*, void*>::iterator iter;
+  for (iter = map_global.begin(); iter != map_global.end(); iter++) {
+    my_free(iter->first);
+    my_free(iter->second);
+  }
+  map_global.clear();
+}
+static my_bool scan_define_oracle(String *buffer, String *newbuffer){
+  int line_idx = 1, def_count = 0;
+  char *p = buffer->c_ptr_safe();
+  my_bool is_scan = 0;
+  my_bool in_string = 0;
+  String endstr1, endstr2, endstr3, old_line, new_line, var_key, var_value;
+  get_end_str(define_char_oracle, &endstr1, &endstr2, &endstr3);
+  
+  //check define char to end
+  while (*p != '\0'){
+    //if (*p == '\'' && define_char_oracle != '\'') {
+    //  in_string = 1;
+    //} else if (in_string && *p == '\'') {
+    //  in_string = 0;
+    //}
+    if (!in_string && *p == define_char_oracle) {  //define start
+      my_bool have_space = 0;
+      char *start = NULL; //var address
+      char *ptmp = p;
+      while(*p != '\0' && (my_isspace(charset_info, *p) || NULL != strchr(endstr1.c_ptr_safe(), *p) || *p==define_char_oracle)){
+        if (*p == define_char_oracle) {  //second define
+          if (have_space == 1) {
+            def_count = 0;
+            old_line.append(ptmp, p - ptmp);
+            new_line.append(ptmp, p - ptmp);
+            newbuffer->append(ptmp, p - ptmp);
+            ptmp = p;
+          }
+          have_space = 0;
+          def_count++;
+        } else if (NULL != strchr(endstr2.c_ptr_safe(), *p)) {
+          my_bool have_note = 0;
+          have_space = 1;
+          while (*p != '\0' && NULL != strchr(endstr2.c_ptr_safe(), *p)) {
+            if (NULL != strchr(endstr3.c_ptr_safe(), *p)) {
+              have_note = 1;
+            }
+            p++;
+          }
+
+          if (*p == '\0' || have_note) {
+            old_line.append(ptmp, p - ptmp);
+            new_line.append(ptmp, p - ptmp);
+            newbuffer->append(ptmp, p - ptmp);
+            ptmp = p;
+            def_count = 0;
+            have_space = 0;
+          }
+          continue;
+        } else {
+          def_count = 0;
+          have_space = 0;
+          old_line.append(ptmp, p - ptmp);
+          new_line.append(ptmp, p - ptmp);
+          newbuffer->append(ptmp, p - ptmp);
+          ptmp = p;
+        }
+        p++;
+      }
+
+      old_line.append(ptmp, p - ptmp);
+      if (def_count >= 3) {
+        if (def_count % 2 == 1) {
+          new_line.append(ptmp, def_count - 1);
+          newbuffer->append(ptmp, def_count - 1);
+          def_count = 1;
+        } else {
+          new_line.append(ptmp, def_count - 2);
+          newbuffer->append(ptmp, def_count - 2);
+          def_count = 2;
+        }
+      } else if (def_count == 1 || def_count == 2) {
+        ;
+      } else if (def_count == 0) {
+        new_line.append(ptmp, p - ptmp);
+        newbuffer->append(ptmp, p - ptmp);
+      }
+
+      start = p;
+      while(*p!='\0' && def_count != 0){
+        char* p1 = strchr(endstr1.c_ptr_safe(), *p); //define end
+        if (p1 != NULL)
+          break;
+        old_line.append_char(*p++);
+      }
+
+      if (p != start){  //var is valid, else invalid return
+        var_key.length(0);
+        var_key.append(start, p - start);
+        get_input_str(&var_key, &var_value, def_count);
+        newbuffer->append(var_value);
+        new_line.append(var_value);
+        is_scan = 1;
+        def_count = 0;
+      } else {
+        //var error, return
+        is_scan = 0;
+        def_count = 0;
+        continue;
+      }
+    }
+
+    if (!in_string && *p == define_char_oracle)
+      continue;
+
+    if (*p != '\0'){
+      newbuffer->append_char(*p);
+      if (*p != '\n') {
+        new_line.append_char(*p);
+        old_line.append_char(*p);
+      }
+    }
+    //output info...
+    if (*p == '\n' || *p == '\0' || *(p + 1) == '\0') {
+      if (is_scan) {
+        is_scan = 0;
+        tee_fprintf(stdout, "Old Val  %d:   %s\n", line_idx, old_line.c_ptr_safe());
+        tee_fprintf(stdout, "New Val  %d:   %s\n", line_idx, new_line.c_ptr_safe());
+      }
+      old_line.length(0);
+      new_line.length(0);
+      line_idx++;
+    }
+
+    if (*p != '\0')
+      p++;
+  }
+  return 1;
+}
+
+static char* get_login_sql_path()
+{
+  char *path = NULL;
+  path = getenv("OBCLIENT_LOGIN_FILE");
+  if (path != NULL) {
+    snprintf(obclient_login, sizeof(obclient_login), "%s", path);
+    return obclient_login;
+  }
+
+  path = getenv("OBCLIENT_PATH"); //obclient_login.sql
+  if (path != NULL) {
+#ifdef _WIN32
+    snprintf(obclient_login, sizeof(obclient_login), "%s\\%s", path, "obclient_login.sql");
+#else
+    snprintf(obclient_login, sizeof(obclient_login), "%s/%s", path, "obclient_login.sql");
+#endif
+    return obclient_login;
+  }
+  return path;
+}
+static void start_login_sql(MYSQL *mysql, String *buffer, const char *path)
+{
+  if (NULL != path && access(path, R_OK)==0) {
+    char buf[MAX_BUFFER_SIZE] = { 0 };
+    snprintf(buf, sizeof(buf), "source %s", path);
+    is_feedback_oracle = 0;
+    com_source(buffer, (char*)buf);
+    is_feedback_oracle = 1;
+  }
+}
+
+static int handle_oracle_sql(MYSQL *mysql, String *buffer) {
+  int ret = 0;
+  regmatch_t subs[NS];
+
+  if (0 == regexec(&pl_show_errors_sql_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0)) {
+#define GET_ERRORS_MAX_SQL_LENGTH 512
+    bool is_need_free_type = false;
+    bool is_need_free_object = false;
+    bool is_need_free_schema = false;
+    char sql[GET_ERRORS_MAX_SQL_LENGTH] = { '\0' };
+
+    if (-1 != subs[show_suffix_offset].rm_so && -1 != subs[show_suffix_offset].rm_eo) {
+      pl_type_len = subs[show_type_offset].rm_eo - subs[show_type_offset].rm_so;
+      pl_type = my_strndup(buffer->c_ptr_safe() + subs[show_type_offset].rm_so, pl_type_len, MYF(MY_WME));
+      mytoupper(pl_type);
+      is_need_free_type = true;
+
+      pl_object_len = subs[show_object_offset].rm_eo - subs[show_object_offset].rm_so;
+      pl_object = buffer->c_ptr_safe() + subs[show_object_offset].rm_so;
+      if (-1 == subs[show_object_quote_offset].rm_eo || -1 == subs[show_object_quote_offset].rm_so) {
+        pl_object = my_strndup(pl_object, pl_object_len, MYF(MY_WME));
+        mytoupper(pl_object);
+        is_need_free_object = true;
+      }
+
+      if (-1 != subs[show_schema_offset].rm_so || -1 != subs[show_schema_offset].rm_eo) {
+        pl_schema_len = subs[show_schema_offset].rm_eo - subs[show_schema_offset].rm_so;
+        pl_schema = buffer->c_ptr_safe() + subs[show_schema_offset].rm_so;
+        if (-1 == subs[show_schema_quote_offset].rm_eo || -1 == subs[show_schema_quote_offset].rm_so) {
+          pl_schema = my_strndup(pl_schema, pl_schema_len, MYF(MY_WME));
+          mytoupper(pl_schema);
+          is_need_free_schema = true;
+        }
+      } else {
+        pl_schema = current_db;
+        pl_schema_len = strlen(pl_schema);
+      }
+    } else {
+      pl_schema = pl_last_schema == NULL ? current_db : pl_last_schema;
+      pl_schema_len = strlen(pl_schema);
+
+      pl_type = pl_last_type;
+      pl_type_len = 0;
+      if (NULL != pl_type) {
+        pl_type_len = strlen(pl_last_type);
+      }
+
+      pl_object = pl_last_object;
+      pl_object_len = 0;
+      if (NULL != pl_object) {
+        pl_object_len = strlen(pl_last_object);
+      }
+    }
+
+
+    my_snprintf(sql, GET_ERRORS_MAX_SQL_LENGTH, pl_get_errors_sql,
+      pl_object_len, pl_object, pl_type_len, pl_type, pl_schema_len, pl_schema);
+
+    if (is_need_free_type) {
+      my_free(pl_type);
+    }
+    if (is_need_free_object) {
+      my_free(pl_object);
+    }
+    if (is_need_free_schema) {
+      my_free(pl_schema);
+    }
+
+    buffer->length(0);
+    buffer->append(sql, strlen(sql));
+  } else if(0 == (regexec(&pl_create_sql_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))){
+    my_free(pl_last_type);
+    pl_last_type = my_strndup(buffer->c_ptr_safe() + subs[create_type_offset].rm_so,
+      subs[create_type_offset].rm_eo - subs[create_type_offset].rm_so, MYF(MY_WME));
+    mytoupper(pl_last_type);
+
+    my_free(pl_last_object);
+    pl_last_object = NULL;
+    if (-1 != subs[create_object_offset].rm_eo && -1 != subs[create_object_offset].rm_so) {
+      pl_last_object = my_strndup(buffer->c_ptr_safe() + subs[create_object_offset].rm_so,
+        subs[create_object_offset].rm_eo - subs[create_object_offset].rm_so, MYF(MY_WME));
+      mytoupper(pl_last_object);
+    }
+
+    if (-1 != subs[create_object_quote_offset].rm_eo && -1 != subs[create_object_quote_offset].rm_so) {
+      char buf[1024] = { 0 };
+      char* p_in = buffer->c_ptr_safe() + subs[create_object_quote_offset].rm_so;
+      int p_in_len = subs[create_object_quote_offset].rm_eo - subs[create_object_quote_offset].rm_so;
+      fmt_str(p_in, p_in_len, buf, 1024);
+      my_free(pl_last_object);
+      pl_last_object = NULL;
+      pl_last_object = my_strndup(buf, strlen(buf), MYF(MY_WME));
+      //mytoupper(pl_last_object);
+    }
+
+    my_free(pl_last_schema);
+    pl_last_schema = NULL;
+    if (-1 != subs[create_schema_offset].rm_eo && -1 != subs[create_schema_offset].rm_so) {
+      pl_last_schema = my_strndup(buffer->c_ptr_safe() + subs[create_schema_offset].rm_so,
+        subs[create_schema_offset].rm_eo - subs[create_schema_offset].rm_so, MYF(MY_WME));
+      mytoupper(pl_last_schema);
+    }
+    if (-1 != subs[create_schema_quote_offset].rm_eo && -1 != subs[create_schema_quote_offset].rm_so) {
+      char buf[1024] = { 0 };
+      char* p_in = buffer->c_ptr_safe() + subs[create_schema_quote_offset].rm_so;
+      int p_in_len = subs[create_schema_quote_offset].rm_eo - subs[create_schema_quote_offset].rm_so;
+      fmt_str(p_in, p_in_len, buf, 1024);
+      my_free(pl_last_schema);
+      pl_last_schema = NULL;
+      pl_last_schema = my_strndup(buf, strlen(buf), MYF(MY_WME));
+      //mytoupper(pl_last_schema);
+    }
+  } else if (0 == (regexec(&pl_alter_sql_re, buffer->c_ptr_safe(), (size_t)NS, subs, 0))) {
+    my_free(pl_last_type);
+    pl_last_type = my_strndup(buffer->c_ptr_safe() + subs[alter_type_offset].rm_so,
+      subs[alter_type_offset].rm_eo - subs[alter_type_offset].rm_so, MYF(MY_WME));
+    mytoupper(pl_last_type);
+
+    my_free(pl_last_object);
+    pl_last_object = NULL;
+    if (-1 != subs[alter_object_offset].rm_eo && -1 != subs[alter_object_offset].rm_so) {
+      pl_last_object = my_strndup(buffer->c_ptr_safe() + subs[alter_object_offset].rm_so,
+        subs[alter_object_offset].rm_eo - subs[alter_object_offset].rm_so, MYF(MY_WME));
+      mytoupper(pl_last_object);
+    }
+
+    if (-1 != subs[alter_object_quote_offset].rm_eo && -1 != subs[alter_object_quote_offset].rm_so) {
+      char buf[1024] = { 0 };
+      char* p_in = buffer->c_ptr_safe() + subs[alter_object_quote_offset].rm_so;
+      int p_in_len = subs[alter_object_quote_offset].rm_eo - subs[alter_object_quote_offset].rm_so;
+      fmt_str(p_in, p_in_len, buf, 1024);
+      my_free(pl_last_object);
+      pl_last_object = NULL;
+      pl_last_object = my_strndup(buf, strlen(buf), MYF(MY_WME));
+      //mytoupper(pl_last_object);
+    }
+
+    my_free(pl_last_schema);
+    pl_last_schema = NULL;
+    if (-1 != subs[alter_schema_offset].rm_eo && -1 != subs[alter_schema_offset].rm_so) {
+      pl_last_schema = my_strndup(buffer->c_ptr_safe() + subs[alter_schema_offset].rm_so,
+        subs[alter_schema_offset].rm_eo - subs[alter_schema_offset].rm_so, MYF(MY_WME));
+      mytoupper(pl_last_schema);
+    }
+    if (-1 != subs[alter_schema_quote_offset].rm_eo && -1 != subs[alter_schema_quote_offset].rm_so) {
+      char buf[1024] = { 0 };
+      char* p_in = buffer->c_ptr_safe() + subs[alter_schema_quote_offset].rm_so;
+      int p_in_len = subs[alter_schema_quote_offset].rm_eo - subs[alter_schema_quote_offset].rm_so;
+      fmt_str(p_in, p_in_len, buf, 1024);
+      my_free(pl_last_schema);
+      pl_last_schema = NULL;
+      pl_last_schema = my_strndup(buf, strlen(buf), MYF(MY_WME));
+      //mytoupper(pl_last_schema);
+    }
+  }
+  return ret;
+}
+
+static void call_dbms_get_line(MYSQL *mysql, uint error){
+  uint inner_error = 0;
+  do {
+    if (NULL == dbms_stmt && !(dbms_stmt = mysql_stmt_init(mysql))) {
+      inner_error = put_error(mysql);
+    } else if (!dbms_prepared && mysql_stmt_prepare(dbms_stmt, dbms_get_line, strlen(dbms_get_line))) {
+      inner_error = put_stmt_error(mysql, dbms_stmt);
+    } else {
+      dbms_prepared = 1;
+
+      if (mysql_stmt_bind_param(dbms_stmt, dbms_ps_params)) {
+        inner_error = put_stmt_error(mysql, dbms_stmt);
+      } else if (mysql_stmt_execute(dbms_stmt)) {
+        inner_error = put_stmt_error(mysql, dbms_stmt);
+      } else if (mysql_stmt_store_result(dbms_stmt)) {
+        inner_error = put_stmt_error(mysql, dbms_stmt);
+      } else if (mysql_stmt_bind_result(dbms_stmt, dbms_rs_bind)) {
+        inner_error = put_stmt_error(mysql, dbms_stmt);
+      } else if (mysql_stmt_fetch(dbms_stmt)) {
+        inner_error = put_stmt_error(mysql, dbms_stmt);
+      } else {
+        if (!error && dbms_status == '0' && !(*dbms_rs_bind[0].is_null)) {
+          //put_info(dbms_line_buffer, INFO_RESULT);
+          tee_puts(dbms_line_buffer, stdout); //dbms enable, Certain output
+        }
+
+        mysql_stmt_free_result(dbms_stmt);
+        if (mysql_stmt_more_results(dbms_stmt)) { // for ob3.2.3.3 skip ok package
+          mysql_stmt_next_result(dbms_stmt);
+        }
+      }
+    }
+  } while (!inner_error && dbms_status == '0');
 }

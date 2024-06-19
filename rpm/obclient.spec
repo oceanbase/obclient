@@ -53,11 +53,11 @@ rm -rf $RPM_BUILD_ROOT
 %pre
 
 %post
-if [ -d %{base_dir} ]; then
-    cp -rf %{prefix}/* %{base_dir}
-else
-    cp -rf %{prefix} %{base_dir}
-fi
+#if [ -d %{base_dir} ]; then
+#    cp -rf %{prefix}/* %{base_dir}
+#else
+#    cp -rf %{prefix} %{base_dir}
+#fi
 rm -rf /usr/bin/obclient
 rm -rf /usr/bin/mysql_config
 ln -s %{prefix}/bin/obclient /usr/bin/obclient
@@ -65,9 +65,10 @@ ln -s %{prefix}/bin/mysql_config /usr/bin/mysql_config
 
 
 %preun
-if [ "$1" = "0" ]; then
-    rm /usr/bin/obclient
-    rm /usr/bin/mysql_config
+#(rpm -e $1->0), (rpm -Uvh $1->1)
+if [ $1 -eq 0 ]; then
+  rm -rf /usr/bin/obclient
+  rm -rf /usr/bin/mysql_config
 fi
 
 %changelog
