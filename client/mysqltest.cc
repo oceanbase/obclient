@@ -292,6 +292,7 @@ static ulong connection_retry_sleep= 100000; /* Microseconds */
 static const char *opt_plugin_dir;
 static const char *opt_suite_dir, *opt_overlay_dir;
 static size_t suite_dir_len, overlay_dir_len;
+static const char *opt_init_command;
 
 /* Precompiled re's */
 static regex_t ps_re;     /* the query can be run using PS protocol */
@@ -6852,6 +6853,7 @@ void do_connect(struct st_command *command)
   int write_timeout= 0;
   int connect_timeout= 0;
   char *csname=0;
+  char *proxy_user=0;
   struct st_connection* con_slot;
 
   static DYNAMIC_STRING ds_connection_name;
@@ -6863,6 +6865,7 @@ void do_connect(struct st_command *command)
   static DYNAMIC_STRING ds_sock;
   static DYNAMIC_STRING ds_options;
   static DYNAMIC_STRING ds_default_auth;
+  static DYNAMIC_STRING ds_proxy_user;
   const struct command_arg connect_args[] = {
     { "connection name", ARG_STRING, TRUE, &ds_connection_name, "Name of the connection" },
     { "host", ARG_STRING, TRUE, &ds_host, "Host to connect to" },
@@ -6872,7 +6875,8 @@ void do_connect(struct st_command *command)
     { "port", ARG_STRING, FALSE, &ds_port, "Port to connect to" },
     { "socket", ARG_STRING, FALSE, &ds_sock, "Socket to connect with" },
     { "options", ARG_STRING, FALSE, &ds_options, "Options to use while connecting" },
-    { "default_auth", ARG_STRING, FALSE, &ds_default_auth, "Default authentication to use" }
+    { "default_auth", ARG_STRING, FALSE, &ds_default_auth, "Default authentication to use" },
+    { "proxy_user", ARG_STRING, FALSE, &ds_proxy_user, "Default proxy user to use" }
   };
 
   DBUG_ENTER("do_connect");
@@ -6958,6 +6962,9 @@ void do_connect(struct st_command *command)
       sizeof("CHARSET=") - 1) == 0)
     {
       csname= strdup(con_options + sizeof("CHARSET=") - 1);
+    }
+    else if (strncasecmp(con_options, "proxy_user=", sizeof("proxy_user=")-1) == 0) {
+      proxy_user = strdup(con_options + sizeof("proxy_user=") - 1);
     }
     else
       die("Illegal option to connect: %.*b",
@@ -7050,15 +7057,24 @@ void do_connect(struct st_command *command)
                   (char*)&connect_timeout);
   }
 
+  if (proxy_user) {
+    mysql_options(con_slot->mysql, OB_OPT_PROXY_USER, proxy_user);
+  }
+
   /* Use default db name */
   if (ds_database.length == 0)
     dynstr_set(&ds_database, opt_db);
 
   if (opt_plugin_dir && *opt_plugin_dir)
     mysql_options(con_slot->mysql, MYSQL_PLUGIN_DIR, opt_plugin_dir);
+  if (opt_init_command && *opt_init_command)
+    mysql_options(con_slot->mysql, MYSQL_INIT_COMMAND, opt_init_command);
 
   if (ds_default_auth.length)
     mysql_options(con_slot->mysql, MYSQL_DEFAULT_AUTH, ds_default_auth.str);
+
+  if (ds_proxy_user.length)
+    mysql_options(con_slot->mysql, OB_OPT_PROXY_USER, ds_proxy_user.str);
 
   /* Special database to allow one to connect without a database name */
   if (ds_database.length && !strcmp(ds_database.str,"*NO-ONE*"))
@@ -7094,7 +7110,12 @@ void do_connect(struct st_command *command)
   dynstr_free(&ds_sock);
   dynstr_free(&ds_options);
   dynstr_free(&ds_default_auth);
-  free(csname);
+  dynstr_free(&ds_proxy_user);
+  if (proxy_user)
+    free(proxy_user);
+  if (csname)
+    free(csname);
+  proxy_user = csname = NULL;
   DBUG_VOID_RETURN;
 }
 
@@ -8197,6 +8218,8 @@ static struct my_option my_long_options[] =
     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   {"cmp-ignore-explain", 0, "ignore explain when comparing results", &opt_cmp_ignore_explain, &opt_cmp_ignore_explain, 0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+  { "init-command", 0, "Connect succuss init command", &opt_init_command, &opt_init_command, 0, 
+    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -8731,9 +8754,13 @@ uint get_ps2text_max_length(MYSQL_FIELD* field) {
     break;
   }
   default: {
+    if (0 == field->max_length && 0 == field->length) {
+      max_length = 128;
+    }
     // do nothing;
   }
   }
+  max_length = max_length > field->length ? max_length : field->length;
   return max_length;
 }
 void append_stmt_result(DYNAMIC_STRING *ds, MYSQL_STMT *stmt,
@@ -10642,6 +10669,8 @@ int main(int argc, char **argv)
 
   if (opt_plugin_dir && *opt_plugin_dir)
     mysql_options(con->mysql, MYSQL_PLUGIN_DIR, opt_plugin_dir);
+  if (opt_init_command && *opt_init_command)
+    mysql_options(con->mysql, MYSQL_INIT_COMMAND, opt_init_command);
 
 #if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
 
