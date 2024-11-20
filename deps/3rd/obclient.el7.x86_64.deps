@@ -5,4 +5,4 @@ repo=https://mirrors.aliyun.com/oceanbase/development-kit/el/7/x86_64/
 
 [deps]
 devdeps-openssl-static-1.0.1e-3.el7.x86_64.rpm
-devdeps-ncurses-static-6.2-3.el7.x86_64.rpm
+devdeps-ncurses-static-6.4-12023083116.el7.x86_64.rpm
