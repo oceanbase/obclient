@@ -892,6 +892,10 @@ CHARSET_INFO *get_charset_by_name(const char *cs_name, myf flags)
   if (strncasecmp(cs_name, "GB18030-2022", 12)==0) {
     return my_collation_get_by_name(&loader, "gb18030", flags);
   }
+  if (strncasecmp(cs_name, "BIG5-HKSCS", 10)==0 ||
+    strncasecmp(cs_name, "BIG5HKSCS", 9) == 0) {
+    return my_collation_get_by_name(&loader, "big5", flags);
+  }
   return my_collation_get_by_name(&loader, cs_name, flags);
 }
 
@@ -937,6 +941,10 @@ get_charset_by_csname(const char *cs_name, uint cs_flags, myf flags)
   my_charset_loader_init_mysys(&loader);
   if (strncasecmp(cs_name, "GB18030-2022", 12)==0) {
     return my_charset_get_by_name(&loader, "gb18030", cs_flags, flags);
+  }
+  if (strncasecmp(cs_name, "BIG5-HKSCS", 10) == 0 ||
+    strncasecmp(cs_name, "BIG5HKSCS", 9) == 0) {
+    return my_charset_get_by_name(&loader, "big5", cs_flags, flags);
   }
   return my_charset_get_by_name(&loader, cs_name, cs_flags, flags);
 }

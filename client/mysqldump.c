@@ -1853,6 +1853,10 @@ static int connect_to_db(char *host, char *user,char *passwd)
   if (strncasecmp(default_charset, "GB18030-2022", 12) == 0) {
     default_charset = (char*)"GB18030";
   }
+  if (strncasecmp(default_charset, "BIG5-HKSCS", 10) == 0 || 
+    strncasecmp(default_charset, "BIG5HKSCS", 9) == 0) {
+    default_charset = (char*)"big5";
+  }
   mysql_options(&mysql_connection, MYSQL_SET_CHARSET_NAME, default_charset);
 
   if (opt_plugin_dir && *opt_plugin_dir)
