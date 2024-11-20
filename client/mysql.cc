@@ -360,7 +360,9 @@ static void start_login_sql(MYSQL *mysql, String *buffer, const char *path);
 
 #define IS_CMD_SLASH 1    //oracle /
 #define IS_CMD_LINE 2     //\s,\h...
+static String last_execute_buffer;
 static int is_cmd_line(char *pos, size_t len);
+static my_bool is_space_buffer(char *start, char *end);
 
 #define COMMAND_MAX 50
 #define COMMAND_NAME_LEN 32
@@ -369,12 +371,14 @@ static char disable_comands[COMMAND_MAX][COMMAND_NAME_LEN] = { 0 };
 static int disable_command_count = 0;
 static my_bool is_command_valid(const char* name);
 
-static my_bool is_source_oracle = 0;
 static std::map<void*, void*> map_global;
 static void free_map_global();
 
 static char* ob_proxy_user_str = 0;
 static char* ob_socket5_proxy_str = 0;
+
+static char* ob_error_top_str = 0;
+static void print_error_sqlstr(String *buffer, char* topN);
 
 /* A structure which contains information on the commands this program
    can understand. */
@@ -1291,6 +1295,7 @@ void init_dbms_output(void)
   dbms_rs_bind[0].buffer = dbms_line_buffer;
   dbms_rs_bind[0].is_null = &dbms_rs_bind[0].is_null_value;
   dbms_rs_bind[0].buffer_length = sizeof(dbms_line_buffer);
+  dbms_rs_bind[0].length = &dbms_rs_bind[0].length_value;
   dbms_rs_bind[1].buffer = &dbms_status;
   dbms_rs_bind[1].buffer_length = sizeof(dbms_status);
 
@@ -1460,8 +1465,7 @@ int main(int argc,char *argv[])
   delimiter_index= get_command_index('d');
   delimiter_str= delimiter;
   default_prompt = my_strdup(getenv("MYSQL_PS1") ? 
-			     getenv("MYSQL_PS1") : 
-			     "obclient [\\d]> ",MYF(MY_WME));
+			     getenv("MYSQL_PS1") : "obclient(\\u@\\T)[\\d]> ",MYF(MY_WME));
   current_prompt = my_strdup(default_prompt,MYF(MY_WME));
   prompt_counter=0;
   aborted= 0;
@@ -1538,6 +1542,15 @@ int main(int argc,char *argv[])
     free_defaults(defaults_argv);
     my_end(0);
     exit(1);
+  }
+
+  if (!opt_mysql_unix_port) {
+    if (NULL == current_host)
+      current_host = my_strdup("127.0.0.1", MYF(MY_WME));
+    if (NULL == current_user)
+      current_user = my_strdup("root@sys", MYF(MY_WME));
+    if (0 == opt_mysql_port)
+      opt_mysql_port = 2881;
   }
 
   preserve_comments = (skip_comments ? 0:1);
@@ -2075,14 +2088,16 @@ static struct my_option my_long_options[] =
    NO_ARG, 0, 0, 0, 0, 0, 0},
   { "proxy-mode", OPT_PROXY_MODE, "Proxy mode is not support getObServerVersion.",
    &is_proxymode, &is_proxymode, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
-  { "ob-disable-commands", OPT_OB_DISABLE_COMMANDS, "disable commands. example: --ob-disable-commands=connect,conn",
+  { "ob-disable-commands", OPT_OB_DISABLE_COMMANDS, "disable commands. example: --ob-disable-commands connect,conn",
     &ob_disable_commands_str,&ob_disable_commands_str, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "ob-service-name", OPT_OB_SERVICE_NAME, "service name. example: --ob-service-name=TEST",
+  { "ob-service-name", OPT_OB_SERVICE_NAME, "service name. example: --ob-service-name TEST",
     &ob_service_name_str,&ob_service_name_str, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "proxy_user", OPT_OB_PROXY_USER , "proxy user. example --proxy_user=test",
+  { "proxy_user", OPT_OB_PROXY_USER , "proxy user. example --proxy_user test",
     &ob_proxy_user_str, &ob_proxy_user_str,0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "socket5_proxy", OPT_OB_SOCKET5_PROXY , "socket5 proxy. example --socket5_proxy=[host],[port],[user],[pwd]",
+  { "socket5_proxy", OPT_OB_SOCKET5_PROXY , "socket5 proxy. example --socket5_proxy [host],[port],[user],[pwd]",
     &ob_socket5_proxy_str, &ob_socket5_proxy_str,0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
+  { "error-sql", OPT_OB_ERROR_SQL, "--error-sql topN",
+     &ob_error_top_str, &ob_error_top_str,0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
 
@@ -2144,6 +2159,9 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
     delimiter_length= (uint)strlen(delimiter);
     delimiter_str= delimiter;
     is_user_specify_delimiter = TRUE;
+    if (delimiter_length == 1 && delimiter && delimiter[0] == ';') {
+      is_user_specify_delimiter = FALSE;
+    }
     break;
   case OPT_LOCAL_INFILE:
     using_opt_local_infile=1;
@@ -2437,7 +2455,6 @@ static int read_and_execute(bool interactive)
 			     "    \"> "));
       if (opt_outfile && glob_buffer.is_empty())
 	    fflush(OUTFILE);
-      is_source_oracle = 0;
 
 #if defined(__WIN__)
       tee_fputs(prompt, stdout);
@@ -2493,6 +2510,20 @@ static int read_and_execute(bool interactive)
       break;
     }
     
+    //skip space line(buffer is empty)
+    {
+      char *pos = NULL, *end_of_line = line + strlen(line);
+      for (pos = line; pos < end_of_line; pos++) {
+        uchar inchar = (uchar)*pos;
+        if (my_isspace(charset_info, inchar) && glob_buffer.is_empty())
+          continue;
+        else
+          break;
+      }
+      if (pos >= end_of_line)
+        continue;
+    }
+
     //support oracle mode prompt
     char *text = NULL;
     if (mysql.oracle_mode && !ml_comment && !in_string && glob_buffer.is_empty() && prompt_cmd_oracle(line, &text)) {
@@ -2709,6 +2740,53 @@ static bool add_line(String &buffer, char *line, size_t line_length,
   switch (is_cmd_line(line, line_length)) {
   case IS_CMD_SLASH: is_slash = true; break;
   case IS_CMD_LINE: is_cmd = true; break;
+  }
+
+  if (mysql.oracle_mode) {
+    int slash_cnt = 0;
+    for (pos = line; pos < end_of_line; pos++) {
+      if (my_isspace(charset_info, *pos) || *pos =='/') {
+        if (*pos == '/')
+          slash_cnt++;
+      } else {
+        break;
+      }
+    }
+
+    //no delimiter, oracle mode / must execute
+    if (!is_user_specify_delimiter || is_prefix("/", delimiter)) {
+      if (is_slash && !buffer.is_empty()) {
+        if ((com = find_command(buffer.c_ptr()))) {
+          if ((*com->func)(&buffer, buffer.c_ptr()) > 0)
+            DBUG_RETURN(1);                       // Quit 
+        } else {
+          if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
+            DBUG_RETURN(1);
+        }
+        buffer.length(0);
+        *in_string = 0;
+        *ml_comment = 0;
+        *is_pl_escape_sql = 0;
+        return 0;
+      } else if (buffer.is_empty() && (is_slash || slash_cnt > 1)) {
+        if (!last_execute_buffer.is_empty()) {
+          String tmpbuffer = last_execute_buffer;
+          if ((com = find_command(tmpbuffer.c_ptr()))) {
+            if ((*com->func)(&buffer, tmpbuffer.c_ptr()) > 0)
+              DBUG_RETURN(1);                       // Quit 
+          } else {
+            if (com_go(&tmpbuffer, 0) > 0)             // < 0 is not fatal
+              DBUG_RETURN(1);
+          }
+          *in_string = 0;
+          *ml_comment = 0;
+          *is_pl_escape_sql = 0;
+        } else {
+          put_info("SP2-0103: Nothing in SQL buffer to run.", INFO_INFO);
+        }
+        return 0;
+      }
+    }
   }
 
   for (pos= out= line; pos < end_of_line; pos++)
@@ -3017,6 +3095,9 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       buffer.realloc(buffer.length()+length+IO_SIZE);
     if ((!*ml_comment || preserve_comments) && buffer.append(line, length))
       DBUG_RETURN(1);
+  }
+  if (is_space_buffer(buffer.c_ptr(), buffer.c_ptr()+buffer.length())) {
+    buffer.length(0);
   }
   DBUG_RETURN(0);
 }
@@ -3717,7 +3798,7 @@ com_go(String *buffer,char *line __attribute__((unused)))
 
   if (mysql.oracle_mode){
     //oracle mode source supprt echo
-    if (verbose || (is_echo_oracle && is_source_oracle)) {
+    if (verbose || (is_echo_oracle && in_com_source)) {
       if (is_termout_oracle_enable(&mysql))
         (void)com_print(buffer, 0);
     }
@@ -3768,6 +3849,9 @@ com_go(String *buffer,char *line __attribute__((unused)))
   
   error = mysql_real_query_for_lazy(buffer->ptr(), buffer->length());
   report_progress_end();
+
+  last_execute_buffer.length(0);
+  last_execute_buffer.append(*buffer);
 
 #ifdef HAVE_READLINE
   if (status.add_to_history) 
@@ -3896,6 +3980,11 @@ com_go(String *buffer,char *line __attribute__((unused)))
     error= put_error(&mysql);
 
 end:
+
+  //print error sql
+  if (error && ob_error_top_str) {
+    print_error_sqlstr(&last_execute_buffer, ob_error_top_str);
+  }
 
  /* Show warnings if any or error occurred */
   if (!mysql.oracle_mode && show_warnings == 1 && (warnings >= 1 || error))
@@ -5446,6 +5535,14 @@ com_connect(String *buffer, char *line)
   my_bool save_rehash= opt_rehash;
   int error;
 
+  //To relink, need to reinitialize this global variable
+  dbms_serveroutput = 0;
+  dbms_prepared = 0;
+  if (dbms_stmt) {
+    mysql_stmt_close(dbms_stmt);
+    dbms_stmt = NULL;
+  }
+
   bzero(buff, sizeof(buff));
   if (buffer)
   {
@@ -5534,6 +5631,9 @@ com_connect(String *buffer, char *line)
     put_info(buff,INFO_INFO);
     sprintf(buff,"Current database: %.128s\n", current_db ? current_db : "*** NONE ***");
     put_info(buff,INFO_INFO);
+
+    //relink success
+    start_login_sql(&mysql, &glob_buffer, get_login_sql_path());
   }
   return error;
 }
@@ -5547,7 +5647,6 @@ static int com_source(String *buffer __attribute__((unused)),
   STATUS old_status;
   FILE *sql_file;
   my_bool save_ignore_errors;
-  is_source_oracle = 1;
 
   /* Skip space from file name */
   while (my_isspace(charset_info,*line))
@@ -5631,6 +5730,9 @@ com_delimiter(String *buffer __attribute__((unused)), char *line)
   delimiter_length= (int)strlen(delimiter);
   delimiter_str= delimiter;
   is_user_specify_delimiter = TRUE;
+  if (delimiter_length == 1 && delimiter && delimiter[0] == ';') {
+    is_user_specify_delimiter = FALSE;
+  }
   return 0;
 }
 
@@ -6059,6 +6161,10 @@ static int sql_real_connect(char *host,char *database,char *user,char *password,
   if (strncasecmp(default_charset, "GB18030-2022", 12) == 0) {
     default_charset = (char*)"GB18030";
   }
+  if (strncasecmp(default_charset, "BIG5-HKSCS", 10) == 0 || 
+    strncasecmp(default_charset, "BIG5HKSCS", 9) == 0) {
+    default_charset = (char*)"big5";
+  }
   mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, default_charset);
 
   my_bool can_handle_expired= opt_connect_expired_password || !status.batch;
@@ -6170,6 +6276,10 @@ static int sql_real_connect_multi(const char* tns_name, ObClientLbAddressList *l
     default_charset = (char *)my_default_csname();
   if (strncasecmp(default_charset, "GB18030-2022", 12) == 0) {
     default_charset = (char*)"GB18030";
+  }
+  if (strncasecmp(default_charset, "BIG5-HKSCS", 10) == 0 || 
+    strncasecmp(default_charset, "BIG5HKSCS", 9) == 0) {
+    default_charset = (char*)"big5";
   }
   config.mysql_charset_name = default_charset;
   //oracle proxy user
@@ -6595,7 +6705,7 @@ put_info(const char *str, INFO_TYPE info_type, uint error, const char *sqlstate,
   if (unbuffered) {
     fflush(file);
   }
-  return info_type == INFO_ERROR ? -1 : 0;  //(ignore_errors ? -1 : 1)
+  return info_type == INFO_ERROR ? (ignore_errors ? -1 : 1) : 0;
 }
 
 
@@ -6721,6 +6831,40 @@ static void end_timer(ulonglong start_time, char *buff)
   strmov(strend(buff),")");
 }
 
+static void get_tenant_clust_name(const char *username, char* tenant, int tenant_len, char* clust, int clust_len)
+{
+  int i = 0, j = 0;
+  my_bool in_tenant = 0;
+  my_bool in_clust = 0;
+  char quto = 0;
+  if (username) {
+    char *s = (char*)username, *e = s + strlen(s);
+    while (s < e) {
+      if ((*s == '\"' || *s == '\'') && quto == 0) {
+        quto = *s;
+      } else if ((*s == '\"' || *s == '\'') && quto != 0){
+        quto = 0;
+      } else if (*s == '@' && in_tenant == 0 && quto == 0) {
+        in_tenant = 1;
+      } else if (*s == '#' && in_tenant == 1 && quto == 0) {
+        in_tenant = 0;
+        in_clust = 1;
+      } else if (*s == ':' && in_clust == 1 && quto == 0) {
+        in_clust = 0;
+        break;
+      }
+      if (in_tenant == 1 && *s != '@') {
+        if (tenant && i < tenant_len)
+          tenant[i++] = *s;
+      }
+      if (in_clust == 1 && *s != '#') {
+        if (clust && j < clust_len)
+          clust[j++] = *s;
+      }
+      s++;
+    }
+  }
+}
 static const char *construct_prompt()
 {
   processed_prompt.free();			// Erase the old prompt
@@ -6896,6 +7040,26 @@ static const char *construct_prompt()
       case 'l':
 	processed_prompt.append(delimiter_str);
 	break;
+      case 'T': {
+        char tenant[256] = { 0 };
+        get_tenant_clust_name(current_user, tenant, 256, NULL, 0);
+        if (strlen(tenant) > 0) {
+          processed_prompt.append(tenant);
+        } else {
+          processed_prompt.append("(none)");
+        }
+      }
+      break;
+      case 'C': {
+        char clust[256] = { 0 };
+        get_tenant_clust_name(current_user, NULL, 0, clust, 256);
+        if (strlen(clust) > 0) {
+          processed_prompt.append(clust);
+        } else {
+          processed_prompt.append("(none)");
+        }
+      }
+      break;
       default:
 	processed_prompt.append(c);
       }
@@ -7008,12 +7172,15 @@ static my_bool is_global_comment(String *buffer)
   return ret;
 }
 static int is_cmd_line(char *pos, size_t len){
+  // 这里不用管comment、instring， 调用外面有判断
   int ret = 0; //1:/ 2:\s,\h...
   size_t i = 0;
   my_bool is_cmd = 0;
   char first_char = 0;
+  char last_char = 0;
   int cmd_chars = 0;
   int all_chars = 0;
+  char *end_pos = pos + len;
   for (i = 0; i < len; i++) {
     if (pos[i] == ' ' || pos[i] == '\t' || pos[i] == '\r' || pos[i] == '\n' || pos[i]==0) {
       continue;
@@ -7022,24 +7189,49 @@ static int is_cmd_line(char *pos, size_t len){
       first_char = pos[i];
     }
 
+#ifdef USE_MB
+    int length = 0;
+    if (use_mb(charset_info) &&
+      (length = my_ismbchar(charset_info, &pos[i], end_pos)))
+    {
+      if (length > 1) {
+        i += length - 1;
+        continue;
+      }
+    }
+#endif
     if (pos[i] == '\\') {
       is_cmd = 1;
       cmd_chars = 0;
     }
     cmd_chars++;
     all_chars++;
+    last_char = pos[i];
   }
   if (first_char == '/' && all_chars == 1) {
     ret = IS_CMD_SLASH;
-  } else if (is_cmd == 1 && cmd_chars == 2) {
-    ret = IS_CMD_LINE;
+  } else if (first_char == '\\' || 
+          (is_cmd == 1 && cmd_chars == 2) || 
+          (is_cmd==1 && cmd_chars == 3 && last_char == ';')) { // select 1 from dual \s;
+    ret = IS_CMD_LINE;//\s,\g,\! date...
+  }
+  return ret;
+}
+static my_bool is_space_buffer(char *start, char *end) {
+  my_bool ret = 1;
+  while (start < end) {
+    if (!my_isspace(charset_info, *start) && *start !='\r' && *start != '\n') {
+      ret = 0;
+      break;
+    }
+    start++;
   }
   return ret;
 }
 static my_bool is_termout_oracle_enable(MYSQL *mysql) {
   my_bool ret = 0;
   if (!mysql->oracle_mode ||
-    !(mysql->oracle_mode && is_source_oracle && !is_termout_oracle)) {
+    !(mysql->oracle_mode && in_com_source && !is_termout_oracle)) {
     ret = 1;
   }
   return ret;
@@ -7690,7 +7882,14 @@ static void call_dbms_get_line(MYSQL *mysql, uint error){
         inner_error = put_stmt_error(mysql, dbms_stmt);
       } else {
         if (!error && dbms_status == '0' && !(*dbms_rs_bind[0].is_null)) {
+          int i = 0;
           //put_info(dbms_line_buffer, INFO_RESULT);
+          //for print space padding
+          for (i = 0; i < *dbms_rs_bind[0].length; i++) {
+            if (dbms_line_buffer[i] == 0) {
+              dbms_line_buffer[i] = ' ';
+            }
+          }
           tee_puts(dbms_line_buffer, stdout); //dbms enable, Certain output
         }
 
@@ -7701,4 +7900,38 @@ static void call_dbms_get_line(MYSQL *mysql, uint error){
       }
     }
   } while (!inner_error && dbms_status == '0');
+}
+
+static void print_error_sqlstr(String *buffer, char* topN)
+{
+  int i = 0;
+  int top = 5;
+  char *p = (char*)buffer->ptr();
+  String topstr;
+
+  //no --error-sql=topN
+  if (NULL == topN || NULL == buffer) {
+    return;
+  }
+  if (strncasecmp(topN, "top", 3) == 0 && topN[3] >= '0' && topN[3] <= '9') {
+    top = atoi(topN + 3);
+    top = top < 0 ? 5 : top;
+  }
+
+  //trim space line
+  while (*p != 0 && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+    p++;
+  }
+
+  while (*p != 0 && (top == 0 || i < top)) {
+    topstr.append_char(*p);
+    if (*p == '\n')
+      i++;
+    p++;
+  }
+  topstr.append_char('\0');
+
+  fprintf(stdout, "----------------------------\n");
+  fprintf(stdout, "%s\n\n", topstr.ptr());
+  fflush(stdout);
 }

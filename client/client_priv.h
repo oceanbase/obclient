@@ -108,6 +108,7 @@ enum options_client
   OPT_OB_SERVICE_NAME,
   OPT_OB_PROXY_USER,
   OPT_OB_SOCKET5_PROXY,
+  OPT_OB_ERROR_SQL,
   OPT_MAX_CLIENT_OPTION /* should be always the last */
 };
 

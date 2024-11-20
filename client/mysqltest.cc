@@ -7002,6 +7002,10 @@ void do_connect(struct st_command *command)
   if (csname && strncasecmp(csname, "GB18030-2022", 12) == 0) {
     csname = (char*)"GB18030";
   }
+  if (csname && (strncasecmp(csname, "BIG5-HKSCS", 10) == 0 ||
+    strncasecmp(csname, "BIG5HKSCS", 9) == 0 )) {
+    csname = (char*)"big5";
+  }
   mysql_options(con_slot->mysql, MYSQL_SET_CHARSET_NAME,
                 csname?csname: charset_info->csname);
   if (opt_charsets_dir)
