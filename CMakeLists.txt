@@ -244,7 +244,11 @@ OPTION(SECURITY_HARDENED "Use security-enhancing compiler features (stack protec
 IF(SECURITY_HARDENED AND NOT WITH_ASAN AND NOT WITH_UBSAN AND NOT WITH_TSAN)
   # security-enhancing flags
   MY_CHECK_AND_SET_COMPILER_FLAG("-pie -fPIC")
-  MY_CHECK_AND_SET_LINKER_FLAG("-Wl,-z,relro,-z,now")
+
+  IF(UNIX AND NOT APPLE)
+    MY_CHECK_AND_SET_LINKER_FLAG("-Wl,-z,relro,-z,now")
+  ENDIF()
+
   MY_CHECK_AND_SET_COMPILER_FLAG("-fstack-protector --param=ssp-buffer-size=4")
   MY_CHECK_AND_SET_COMPILER_FLAG("-D_FORTIFY_SOURCE=2" RELEASE RELWITHDEBINFO)
 ENDIF()
