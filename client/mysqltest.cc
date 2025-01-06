@@ -7003,7 +7003,7 @@ void do_connect(struct st_command *command)
     csname = (char*)"GB18030";
   }
   if (csname && (strncasecmp(csname, "BIG5-HKSCS", 10) == 0 ||
-    strncasecmp(csname, "BIG5HKSCS", 9) == 0 )) {
+    strncasecmp(csname, "BIG5HKSCS", 9) == 0)) {
     csname = (char*)"big5";
   }
   mysql_options(con_slot->mysql, MYSQL_SET_CHARSET_NAME,
@@ -8230,7 +8230,7 @@ static struct my_option my_long_options[] =
 
 void print_version(void)
 {
-  printf("%s  Ver %s Distrib %s, for %s (%s)\n",my_progname,MTEST_VERSION,
+  printf("%s  Ver %s Distrib %s, for %s (%s)\n",my_progname,OBCLIENT_VERSION,
 	 MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
 }
 

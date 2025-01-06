@@ -129,8 +129,18 @@ static void my_vidattr(chtype attrs)
 #define PROMPT_CHAR '\\'
 #define DEFAULT_DELIMITER ";"
 
+#define MAX_DEFINE_SIZE 4096
 #define MAX_BUFFER_SIZE 1024
 #define MAX_BATCH_BUFFER_SIZE (1024L * 1024L * 1024L)
+
+#define JUMP_SPACE(p) while(*p && my_isspace(charset_info, *p)){p++;}
+#define JUMP_SPACE_NR(p) while(*p && (*p==' ' || *p=='\t'||*p=='\r'||*p=='\n')){p++;}
+
+typedef enum _enum_CMD_STATE {
+  CMD_STATE_UNKNOW = 0,
+  CMD_STATE_RUNED,
+  CMD_STATE_ERROR
+} CMD_STATE;
 
 typedef struct st_status
 {
@@ -231,6 +241,7 @@ static char *current_host,*current_db,*current_user=0,*opt_password=0,
             *opt_init_command= 0;
 static char *current_host_success = 0;
 static int current_port_success = 0;
+static int last_session_mode = 0;
 static char *histfile;
 static char *histfile_tmp;
 static String glob_buffer,old_buffer;
@@ -317,7 +328,9 @@ static const char* construct_prompt();
 enum get_arg_mode { CHECK, GET, GET_NEXT};
 static int rewrite_by_oracle(char *line);
 static char *get_arg_by_index(char *line, int arg_index);
+static char *get_arg_string(char *line, get_arg_mode mode);
 static char *get_arg(char *line, get_arg_mode mode);
+static void split_fullname(char *username, char** newuser, char** newother);
 static void init_username();
 static void add_int_to_prompt(int toadd);
 static int get_result_width(MYSQL_RES *res);
@@ -345,14 +358,15 @@ static my_bool is_trimspool_oracle = 1;
 static my_bool is_exitcommit_oracle = 1;
 static uint obclient_num_width = 10;
 static bool force_set_num_width_close = 1; //default support as oracle
-static my_bool prompt_cmd_oracle(const char *str, char **text);
-static my_bool is_global_comment(String *globbuffer);
-static my_bool set_cmd_oracle(const char *str);
-static my_bool set_param_oracle(const char *str);
-static my_bool scan_define_oracle(String *buffer, String *newbuffer);
-static my_bool exec_cmd_oracle(String *buffer, String *newbuffer);
+static char* get_trim_comment_sql(const char* str, int len);
+static my_bool is_oracle_pl_escape_sql(const char *str, int len);
 static my_bool is_termout_oracle_enable(MYSQL *mysql);
-
+static int run_oracle_command(String *buffer, const char *line);
+static int set_cmd_oracle(const char *str, int len);
+static int set_param_oracle(const char *str, int len);
+static void set_key_value(const char *strkey, const char *strval);
+static int define_cmd_oracle(char *line);
+static my_bool scan_define_oracle(String *buffer, int display);
 
 static char obclient_login[MAX_BUFFER_SIZE] = { 0 };
 static char* get_login_sql_path();
@@ -362,7 +376,6 @@ static void start_login_sql(MYSQL *mysql, String *buffer, const char *path);
 #define IS_CMD_LINE 2     //\s,\h...
 static String last_execute_buffer;
 static int is_cmd_line(char *pos, size_t len);
-static my_bool is_space_buffer(char *start, char *end);
 
 #define COMMAND_MAX 50
 #define COMMAND_NAME_LEN 32
@@ -371,14 +384,17 @@ static char disable_comands[COMMAND_MAX][COMMAND_NAME_LEN] = { 0 };
 static int disable_command_count = 0;
 static my_bool is_command_valid(const char* name);
 
-static std::map<void*, void*> map_global;
-static void free_map_global();
+static std::map<void*, void*> global_define_map;
+static void free_global_define_map();
 
 static char* ob_proxy_user_str = 0;
 static char* ob_socket5_proxy_str = 0;
 
 static char* ob_error_top_str = 0;
 static void print_error_sqlstr(String *buffer, char* topN);
+
+static void connect_mysql_tenant(String *buffer);
+static bool execute_cmd(String& buffer);
 
 /* A structure which contains information on the commands this program
    can understand. */
@@ -389,771 +405,769 @@ typedef struct {
   int (*func)(String *str,char *); /* Function to call to do the job. */
   bool takes_params;		/* Max parameters for command */
   const char *doc;		/* Documentation for this function.  */
+  char* cmdstr;
 } COMMANDS;
 
 static COMMANDS commands[] = {
-  { "?",      '?', com_help,   1, "Synonym for `help'." },
-  { "clear",  'c', com_clear,  0, "Clear the current input statement."},
+  { "?",      '?', com_help,   1, "Synonym for `help'.", NULL},
+  { "clear",  'c', com_clear,  0, "Clear the current input statement." , NULL},
   { "connect",'r', com_connect,1,
-    "Reconnect to the server. Optional arguments are db and host." },
+    "Reconnect to the server. Optional arguments are db and host." , NULL},
   { "conn", 0, com_connect, 1,
-    "Reconnect to the server. Optional arguments are db and host." },
-  { "delimiter", 'd', com_delimiter,    1,
-    "Set statement delimiter." },
+    "Reconnect to the server. Optional arguments are db and host." , NULL},
+  { "delimiter", 'd', com_delimiter, 1, "Set statement delimiter." , NULL},
 #ifdef USE_POPEN
-  { "edit",   'e', com_edit,   0, "Edit command with $EDITOR."},
+  { "edit",   'e', com_edit,   0, "Edit command with $EDITOR." , NULL},
 #endif
   { "ego",    'G', com_ego,    0,
-    "Send command to OceanBase server, display result vertically."},
-  { "exit",   'q', com_quit,   0, "Exit mysql. Same as quit."},
-  { "go",     'g', com_go,     0, "Send command to OceanBase server." },
-  { "help",   'h', com_help,   1, "Display this help." },
+    "Send command to OceanBase server, display result vertically.", NULL},
+  { "exit",   'q', com_quit,   0, "Exit mysql. Same as quit." , NULL},
+  { "go",     'g', com_go,     0, "Send command to OceanBase server." , NULL},
+  { "help",   'h', com_help,   1, "Display this help." , NULL},
 #ifdef USE_POPEN
-  { "nopager",'n', com_nopager,0, "Disable pager, print to stdout." },
+  { "nopager",'n', com_nopager,0, "Disable pager, print to stdout." , NULL},
 #endif
-  { "notee",  't', com_notee,  0, "Don't write into outfile." },
+  { "notee",  't', com_notee,  0, "Don't write into outfile." , NULL},
 #ifdef USE_POPEN
   { "pager",  'P', com_pager,  1, 
-    "Set PAGER [to_pager]. Print the query results via PAGER." },
+    "Set PAGER [to_pager]. Print the query results via PAGER." , NULL},
 #endif
-  { "print",  'p', com_print,  0, "Print current command." },
-  { "prompt", 'R', com_prompt, 1, "Change your mysql prompt."},
-  { "quit",   'q', com_quit,   0, "Quit mysql." },
-  { "rehash", '#', com_rehash, 0, "Rebuild completion hash." },
+  { "print",  'p', com_print,  0, "Print current command." , NULL},
+  { "prompt", 'R', com_prompt, 1, "Change your mysql prompt.", NULL},
+  { "quit",   'q', com_quit,   0, "Quit mysql." , NULL},
+  { "rehash", '#', com_rehash, 0, "Rebuild completion hash." , NULL},
   { "source", '.', com_source, 1,
-    "Execute an SQL script file. Takes a file name as an argument."},
-  { "status", 's', com_status, 0, "Get status information from the server."},
+    "Execute an SQL script file. Takes a file name as an argument.", NULL},
+  { "status", 's', com_status, 0, "Get status information from the server.", NULL},
 #ifdef USE_POPEN
-  { "system", '!', com_shell,  1, "Execute a system shell command."},
+  { "system", '!', com_shell,  1, "Execute a system shell command.", NULL},
 #endif
   { "tee",    'T', com_tee,    1, 
-    "Set outfile [to_outfile]. Append everything into given outfile." },
+    "Set outfile [to_outfile]. Append everything into given outfile." , NULL},
   { "use",    'u', com_use,    1,
-    "Use another database. Takes database name as argument." },
+    "Use another database. Takes database name as argument." , NULL},
   { "charset",    'C', com_charset,    1,
-    "Switch to another charset. Might be needed for processing binlog with multi-byte charsets." },
-  { "warnings", 'W', com_warnings,  0,
-    "Show warnings after every statement." },
-  { "nowarning", 'w', com_nowarnings, 0,
-    "Don't show warnings after every statement." },
+    "Switch to another charset. Might be needed for processing binlog with multi-byte charsets." , NULL},
+  { "warnings", 'W', com_warnings,  0, "Show warnings after every statement." , NULL},
+  { "nowarning", 'w', com_nowarnings, 0, "Don't show warnings after every statement." , NULL},
   /* Get bash-like expansion for some commands */
-  { "create table",     0, 0, 0, ""},
-  { "create database",  0, 0, 0, ""},
-  { "show databases",   0, 0, 0, ""},
-  { "show fields from", 0, 0, 0, ""},
-  { "show keys from",   0, 0, 0, ""},
-  { "show tables",      0, 0, 0, ""},
-  { "load data from",   0, 0, 0, ""},
-  { "alter table",      0, 0, 0, ""},
-  { "set option",       0, 0, 0, ""},
-  { "lock tables",      0, 0, 0, ""},
-  { "unlock tables",    0, 0, 0, ""},
+  { "create table",     0, 0, 0, "", NULL},
+  { "create database",  0, 0, 0, "", NULL},
+  { "show databases",   0, 0, 0, "", NULL},
+  { "show fields from", 0, 0, 0, "", NULL},
+  { "show keys from",   0, 0, 0, "", NULL},
+  { "show tables",      0, 0, 0, "", NULL},
+  { "load data from",   0, 0, 0, "", NULL},
+  { "alter table",      0, 0, 0, "", NULL},
+  { "set option",       0, 0, 0, "", NULL},
+  { "lock tables",      0, 0, 0, "", NULL},
+  { "unlock tables",    0, 0, 0, "", NULL},
   /* generated 2006-12-28.  Refresh occasionally from lexer. */
-  { "ACTION", 0, 0, 0, ""},
-  { "ADD", 0, 0, 0, ""},
-  { "AFTER", 0, 0, 0, ""},
-  { "AGAINST", 0, 0, 0, ""},
-  { "AGGREGATE", 0, 0, 0, ""},
-  { "ALL", 0, 0, 0, ""},
-  { "ALGORITHM", 0, 0, 0, ""},
-  { "ALTER", 0, 0, 0, ""},
-  { "ANALYZE", 0, 0, 0, ""},
-  { "AND", 0, 0, 0, ""},
-  { "ANY", 0, 0, 0, ""},
-  { "AS", 0, 0, 0, ""},
-  { "ASC", 0, 0, 0, ""},
-  { "ASCII", 0, 0, 0, ""},
-  { "ASENSITIVE", 0, 0, 0, ""},
-  { "AUTO_INCREMENT", 0, 0, 0, ""},
-  { "AVG", 0, 0, 0, ""},
-  { "AVG_ROW_LENGTH", 0, 0, 0, ""},
-  { "BACKUP", 0, 0, 0, ""},
-  { "BDB", 0, 0, 0, ""},
-  { "BEFORE", 0, 0, 0, ""},
-  { "BEGIN", 0, 0, 0, ""},
-  { "BERKELEYDB", 0, 0, 0, ""},
-  { "BETWEEN", 0, 0, 0, ""},
-  { "BIGINT", 0, 0, 0, ""},
-  { "BINARY", 0, 0, 0, ""},
-  { "BINLOG", 0, 0, 0, ""},
-  { "BIT", 0, 0, 0, ""},
-  { "BLOB", 0, 0, 0, ""},
-  { "BOOL", 0, 0, 0, ""},
-  { "BOOLEAN", 0, 0, 0, ""},
-  { "BOTH", 0, 0, 0, ""},
-  { "BTREE", 0, 0, 0, ""},
-  { "BY", 0, 0, 0, ""},
-  { "BYTE", 0, 0, 0, ""},
-  { "CACHE", 0, 0, 0, ""},
-  { "CALL", 0, 0, 0, ""},
-  { "CASCADE", 0, 0, 0, ""},
-  { "CASCADED", 0, 0, 0, ""},
-  { "CASE", 0, 0, 0, ""},
-  { "CHAIN", 0, 0, 0, ""},
-  { "CHANGE", 0, 0, 0, ""},
-  { "CHANGED", 0, 0, 0, ""},
-  { "CHAR", 0, 0, 0, ""},
-  { "CHARACTER", 0, 0, 0, ""},
-  { "CHARSET", 0, 0, 0, ""},
-  { "CHECK", 0, 0, 0, ""},
-  { "CHECKSUM", 0, 0, 0, ""},
-  { "CIPHER", 0, 0, 0, ""},
-  { "CLIENT", 0, 0, 0, ""},
-  { "CLOSE", 0, 0, 0, ""},
-  { "CODE", 0, 0, 0, ""},
-  { "COLLATE", 0, 0, 0, ""},
-  { "COLLATION", 0, 0, 0, ""},
-  { "COLUMN", 0, 0, 0, ""},
-  { "COLUMNS", 0, 0, 0, ""},
-  { "COMMENT", 0, 0, 0, ""},
-  { "COMMIT", 0, 0, 0, ""},
-  { "COMMITTED", 0, 0, 0, ""},
-  { "COMPACT", 0, 0, 0, ""},
-  { "COMPRESSED", 0, 0, 0, ""},
-  { "CONCURRENT", 0, 0, 0, ""},
-  { "CONDITION", 0, 0, 0, ""},
-  { "CONNECTION", 0, 0, 0, ""},
-  { "CONSISTENT", 0, 0, 0, ""},
-  { "CONSTRAINT", 0, 0, 0, ""},
-  { "CONTAINS", 0, 0, 0, ""},
-  { "CONTINUE", 0, 0, 0, ""},
-  { "CONVERT", 0, 0, 0, ""},
-  { "CREATE", 0, 0, 0, ""},
-  { "CROSS", 0, 0, 0, ""},
-  { "CUBE", 0, 0, 0, ""},
-  { "CURRENT_DATE", 0, 0, 0, ""},
-  { "CURRENT_TIME", 0, 0, 0, ""},
-  { "CURRENT_TIMESTAMP", 0, 0, 0, ""},
-  { "CURRENT_USER", 0, 0, 0, ""},
-  { "CURSOR", 0, 0, 0, ""},
-  { "DATA", 0, 0, 0, ""},
-  { "DATABASE", 0, 0, 0, ""},
-  { "DATABASES", 0, 0, 0, ""},
-  { "DATE", 0, 0, 0, ""},
-  { "DATETIME", 0, 0, 0, ""},
-  { "DAY", 0, 0, 0, ""},
-  { "DAY_HOUR", 0, 0, 0, ""},
-  { "DAY_MICROSECOND", 0, 0, 0, ""},
-  { "DAY_MINUTE", 0, 0, 0, ""},
-  { "DAY_SECOND", 0, 0, 0, ""},
-  { "DEALLOCATE", 0, 0, 0, ""},     
-  { "DEC", 0, 0, 0, ""},
-  { "DECIMAL", 0, 0, 0, ""},
-  { "DECLARE", 0, 0, 0, ""},
-  { "DEFAULT", 0, 0, 0, ""},
-  { "DEFINER", 0, 0, 0, ""},
-  { "DELAYED", 0, 0, 0, ""},
-  { "DELAY_KEY_WRITE", 0, 0, 0, ""},
-  { "DELETE", 0, 0, 0, ""},
-  { "DESC", 0, 0, 0, ""},
-  { "DESCRIBE", 0, 0, 0, ""},
-  { "DES_KEY_FILE", 0, 0, 0, ""},
-  { "DETERMINISTIC", 0, 0, 0, ""},
-  { "DIRECTORY", 0, 0, 0, ""},
-  { "DISABLE", 0, 0, 0, ""},
-  { "DISCARD", 0, 0, 0, ""},
-  { "DISTINCT", 0, 0, 0, ""},
-  { "DISTINCTROW", 0, 0, 0, ""},
-  { "DIV", 0, 0, 0, ""},
-  { "DO", 0, 0, 0, ""},
-  { "DOUBLE", 0, 0, 0, ""},
-  { "DROP", 0, 0, 0, ""},
-  { "DUAL", 0, 0, 0, ""},
-  { "DUMPFILE", 0, 0, 0, ""},
-  { "DUPLICATE", 0, 0, 0, ""},
-  { "DYNAMIC", 0, 0, 0, ""},
-  { "EACH", 0, 0, 0, ""},
-  { "ELSE", 0, 0, 0, ""},
-  { "ELSEIF", 0, 0, 0, ""},
-  { "ENABLE", 0, 0, 0, ""},
-  { "ENCLOSED", 0, 0, 0, ""},
-  { "END", 0, 0, 0, ""},
-  { "ENGINE", 0, 0, 0, ""},
-  { "ENGINES", 0, 0, 0, ""},
-  { "ENUM", 0, 0, 0, ""},
-  { "ERRORS", 0, 0, 0, ""},
-  { "ESCAPE", 0, 0, 0, ""},
-  { "ESCAPED", 0, 0, 0, ""},
-  { "EVENTS", 0, 0, 0, ""},
-  { "EXECUTE", 0, 0, 0, ""},
-  { "EXISTS", 0, 0, 0, ""},
-  { "EXIT", 0, 0, 0, ""},
-  { "EXPANSION", 0, 0, 0, ""},
-  { "EXPLAIN", 0, 0, 0, ""},
-  { "EXTENDED", 0, 0, 0, ""},
-  { "FALSE", 0, 0, 0, ""},
-  { "FAST", 0, 0, 0, ""},
-  { "FETCH", 0, 0, 0, ""},
-  { "FIELDS", 0, 0, 0, ""},
-  { "FILE", 0, 0, 0, ""},
-  { "FIRST", 0, 0, 0, ""},
-  { "FIXED", 0, 0, 0, ""},
-  { "FLOAT", 0, 0, 0, ""},
-  { "FLOAT4", 0, 0, 0, ""},
-  { "FLOAT8", 0, 0, 0, ""},
-  { "FLUSH", 0, 0, 0, ""},
-  { "FOR", 0, 0, 0, ""},
-  { "FORCE", 0, 0, 0, ""},
-  { "FOREIGN", 0, 0, 0, ""},
-  { "FOUND", 0, 0, 0, ""},
-  { "FROM", 0, 0, 0, ""},
-  { "FULL", 0, 0, 0, ""},
-  { "FULLTEXT", 0, 0, 0, ""},
-  { "FUNCTION", 0, 0, 0, ""},
-  { "GEOMETRY", 0, 0, 0, ""},
-  { "GEOMETRYCOLLECTION", 0, 0, 0, ""},
-  { "GET_FORMAT", 0, 0, 0, ""},
-  { "GLOBAL", 0, 0, 0, ""},
-  { "GRANT", 0, 0, 0, ""},
-  { "GRANTS", 0, 0, 0, ""},
-  { "GROUP", 0, 0, 0, ""},
-  { "HANDLER", 0, 0, 0, ""},
-  { "HASH", 0, 0, 0, ""},
-  { "HAVING", 0, 0, 0, ""},
-  { "HELP", 0, 0, 0, ""},
-  { "HIGH_PRIORITY", 0, 0, 0, ""},
-  { "HOSTS", 0, 0, 0, ""},
-  { "HOUR", 0, 0, 0, ""},
-  { "HOUR_MICROSECOND", 0, 0, 0, ""},
-  { "HOUR_MINUTE", 0, 0, 0, ""},
-  { "HOUR_SECOND", 0, 0, 0, ""},
-  { "IDENTIFIED", 0, 0, 0, ""},
-  { "IF", 0, 0, 0, ""},
-  { "IGNORE", 0, 0, 0, ""},
-  { "IMPORT", 0, 0, 0, ""},
-  { "IN", 0, 0, 0, ""},
-  { "INDEX", 0, 0, 0, ""},
-  { "INDEXES", 0, 0, 0, ""},
-  { "INFILE", 0, 0, 0, ""},
-  { "INNER", 0, 0, 0, ""},
-  { "INNOBASE", 0, 0, 0, ""},
-  { "INNODB", 0, 0, 0, ""},
-  { "INOUT", 0, 0, 0, ""},
-  { "INSENSITIVE", 0, 0, 0, ""},
-  { "INSERT", 0, 0, 0, ""},
-  { "INSERT_METHOD", 0, 0, 0, ""},
-  { "INT", 0, 0, 0, ""},
-  { "INT1", 0, 0, 0, ""},
-  { "INT2", 0, 0, 0, ""},
-  { "INT3", 0, 0, 0, ""},
-  { "INT4", 0, 0, 0, ""},
-  { "INT8", 0, 0, 0, ""},
-  { "INTEGER", 0, 0, 0, ""},
-  { "INTERVAL", 0, 0, 0, ""},
-  { "INTO", 0, 0, 0, ""},
-  { "IO_THREAD", 0, 0, 0, ""},
-  { "IS", 0, 0, 0, ""},
-  { "ISOLATION", 0, 0, 0, ""},
-  { "ISSUER", 0, 0, 0, ""},
-  { "ITERATE", 0, 0, 0, ""},
-  { "INVOKER", 0, 0, 0, ""},
-  { "JOIN", 0, 0, 0, ""},
-  { "KEY", 0, 0, 0, ""},
-  { "KEYS", 0, 0, 0, ""},
-  { "KILL", 0, 0, 0, ""},
-  { "LANGUAGE", 0, 0, 0, ""},
-  { "LAST", 0, 0, 0, ""},
-  { "LEADING", 0, 0, 0, ""},
-  { "LEAVE", 0, 0, 0, ""},
-  { "LEAVES", 0, 0, 0, ""},
-  { "LEFT", 0, 0, 0, ""},
-  { "LEVEL", 0, 0, 0, ""},
-  { "LIKE", 0, 0, 0, ""},
-  { "LIMIT", 0, 0, 0, ""},
-  { "LINES", 0, 0, 0, ""},
-  { "LINESTRING", 0, 0, 0, ""},
-  { "LOAD", 0, 0, 0, ""},
-  { "LOCAL", 0, 0, 0, ""},
-  { "LOCALTIME", 0, 0, 0, ""},
-  { "LOCALTIMESTAMP", 0, 0, 0, ""},
-  { "LOCK", 0, 0, 0, ""},
-  { "LOCKS", 0, 0, 0, ""},
-  { "LOGS", 0, 0, 0, ""},
-  { "LONG", 0, 0, 0, ""},
-  { "LONGBLOB", 0, 0, 0, ""},
-  { "LONGTEXT", 0, 0, 0, ""},
-  { "LOOP", 0, 0, 0, ""},
-  { "LOW_PRIORITY", 0, 0, 0, ""},
-  { "MASTER", 0, 0, 0, ""},
-  { "MASTER_CONNECT_RETRY", 0, 0, 0, ""},
-  { "MASTER_HOST", 0, 0, 0, ""},
-  { "MASTER_LOG_FILE", 0, 0, 0, ""},
-  { "MASTER_LOG_POS", 0, 0, 0, ""},
-  { "MASTER_PASSWORD", 0, 0, 0, ""},
-  { "MASTER_PORT", 0, 0, 0, ""},
-  { "MASTER_SERVER_ID", 0, 0, 0, ""},
-  { "MASTER_SSL", 0, 0, 0, ""},
-  { "MASTER_SSL_CA", 0, 0, 0, ""},
-  { "MASTER_SSL_CAPATH", 0, 0, 0, ""},
-  { "MASTER_SSL_CERT", 0, 0, 0, ""},
-  { "MASTER_SSL_CIPHER", 0, 0, 0, ""},
-  { "MASTER_SSL_KEY", 0, 0, 0, ""},
-  { "MASTER_USER", 0, 0, 0, ""},
-  { "MATCH", 0, 0, 0, ""},
-  { "MAX_CONNECTIONS_PER_HOUR", 0, 0, 0, ""},
-  { "MAX_QUERIES_PER_HOUR", 0, 0, 0, ""},
-  { "MAX_ROWS", 0, 0, 0, ""},
-  { "MAX_UPDATES_PER_HOUR", 0, 0, 0, ""},
-  { "MAX_USER_CONNECTIONS", 0, 0, 0, ""},
-  { "MEDIUM", 0, 0, 0, ""},
-  { "MEDIUMBLOB", 0, 0, 0, ""},
-  { "MEDIUMINT", 0, 0, 0, ""},
-  { "MEDIUMTEXT", 0, 0, 0, ""},
-  { "MERGE", 0, 0, 0, ""},
-  { "MICROSECOND", 0, 0, 0, ""},
-  { "MIDDLEINT", 0, 0, 0, ""},
-  { "MIGRATE", 0, 0, 0, ""},
-  { "MINUTE", 0, 0, 0, ""},
-  { "MINUTE_MICROSECOND", 0, 0, 0, ""},
-  { "MINUTE_SECOND", 0, 0, 0, ""},
-  { "MIN_ROWS", 0, 0, 0, ""},
-  { "MOD", 0, 0, 0, ""},
-  { "MODE", 0, 0, 0, ""},
-  { "MODIFIES", 0, 0, 0, ""},
-  { "MODIFY", 0, 0, 0, ""},
-  { "MONTH", 0, 0, 0, ""},
-  { "MULTILINESTRING", 0, 0, 0, ""},
-  { "MULTIPOINT", 0, 0, 0, ""},
-  { "MULTIPOLYGON", 0, 0, 0, ""},
-  { "MUTEX", 0, 0, 0, ""},
-  { "NAME", 0, 0, 0, ""},
-  { "NAMES", 0, 0, 0, ""},
-  { "NATIONAL", 0, 0, 0, ""},
-  { "NATURAL", 0, 0, 0, ""},
-  { "NCHAR", 0, 0, 0, ""},
-  { "NEW", 0, 0, 0, ""},
-  { "NEXT", 0, 0, 0, ""},
-  { "NO", 0, 0, 0, ""},
-  { "NONE", 0, 0, 0, ""},
-  { "NOT", 0, 0, 0, ""},
-  { "NO_WRITE_TO_BINLOG", 0, 0, 0, ""},
-  { "NULL", 0, 0, 0, ""},
-  { "NUMERIC", 0, 0, 0, ""},
-  { "NVARCHAR", 0, 0, 0, ""},
-  { "OFFSET", 0, 0, 0, ""},
-  { "OLD_PASSWORD", 0, 0, 0, ""},
-  { "ON", 0, 0, 0, ""},
-  { "ONE", 0, 0, 0, ""},
-  { "OPEN", 0, 0, 0, ""},
-  { "OPTIMIZE", 0, 0, 0, ""},
-  { "OPTION", 0, 0, 0, ""},
-  { "OPTIONALLY", 0, 0, 0, ""},
-  { "OR", 0, 0, 0, ""},
-  { "ORDER", 0, 0, 0, ""},
-  { "OUT", 0, 0, 0, ""},
-  { "OUTER", 0, 0, 0, ""},
-  { "OUTFILE", 0, 0, 0, ""},
-  { "PACK_KEYS", 0, 0, 0, ""},
-  { "PARTIAL", 0, 0, 0, ""},
-  { "PASSWORD", 0, 0, 0, ""},
-  { "PHASE", 0, 0, 0, ""},
-  { "POINT", 0, 0, 0, ""},
-  { "POLYGON", 0, 0, 0, ""},
-  { "PRECISION", 0, 0, 0, ""},
-  { "PREPARE", 0, 0, 0, ""},
-  { "PREV", 0, 0, 0, ""},
-  { "PRIMARY", 0, 0, 0, ""},
-  { "PRIVILEGES", 0, 0, 0, ""},
-  { "PROCEDURE", 0, 0, 0, ""},
-  { "PROCESS", 0, 0, 0, ""},
-  { "PROCESSLIST", 0, 0, 0, ""},
-  { "PURGE", 0, 0, 0, ""},
-  { "QUARTER", 0, 0, 0, ""},
-  { "QUERY", 0, 0, 0, ""},
-  { "QUICK", 0, 0, 0, ""},
-  { "READ", 0, 0, 0, ""},
-  { "READS", 0, 0, 0, ""},
-  { "REAL", 0, 0, 0, ""},
-  { "RECOVER", 0, 0, 0, ""},
-  { "REDUNDANT", 0, 0, 0, ""},
-  { "REFERENCES", 0, 0, 0, ""},
-  { "REGEXP", 0, 0, 0, ""},
-  { "RELAY_LOG_FILE", 0, 0, 0, ""},
-  { "RELAY_LOG_POS", 0, 0, 0, ""},
-  { "RELAY_THREAD", 0, 0, 0, ""},
-  { "RELEASE", 0, 0, 0, ""},
-  { "RELOAD", 0, 0, 0, ""},
-  { "RENAME", 0, 0, 0, ""},
-  { "REPAIR", 0, 0, 0, ""},
-  { "REPEATABLE", 0, 0, 0, ""},
-  { "REPLACE", 0, 0, 0, ""},
-  { "REPLICATION", 0, 0, 0, ""},
-  { "REPEAT", 0, 0, 0, ""},
-  { "REQUIRE", 0, 0, 0, ""},
-  { "RESET", 0, 0, 0, ""},
-  { "RESTORE", 0, 0, 0, ""},
-  { "RESTRICT", 0, 0, 0, ""},
-  { "RESUME", 0, 0, 0, ""},
-  { "RETURN", 0, 0, 0, ""},
-  { "RETURNS", 0, 0, 0, ""},
-  { "REVOKE", 0, 0, 0, ""},
-  { "RIGHT", 0, 0, 0, ""},
-  { "RLIKE", 0, 0, 0, ""},
-  { "ROLLBACK", 0, 0, 0, ""},
-  { "ROLLUP", 0, 0, 0, ""},
-  { "ROUTINE", 0, 0, 0, ""},
-  { "ROW", 0, 0, 0, ""},
-  { "ROWS", 0, 0, 0, ""},
-  { "ROW_FORMAT", 0, 0, 0, ""},
-  { "RTREE", 0, 0, 0, ""},
-  { "SAVEPOINT", 0, 0, 0, ""},
-  { "SCHEMA", 0, 0, 0, ""},
-  { "SCHEMAS", 0, 0, 0, ""},
-  { "SECOND", 0, 0, 0, ""},
-  { "SECOND_MICROSECOND", 0, 0, 0, ""},
-  { "SECURITY", 0, 0, 0, ""},
-  { "SELECT", 0, 0, 0, ""},
-  { "SENSITIVE", 0, 0, 0, ""},
-  { "SEPARATOR", 0, 0, 0, ""},
-  { "SERIAL", 0, 0, 0, ""},
-  { "SERIALIZABLE", 0, 0, 0, ""},
-  { "SESSION", 0, 0, 0, ""},
-  { "SET", 0, 0, 0, ""},
-  { "SHARE", 0, 0, 0, ""},
-  { "SHOW", 0, 0, 0, ""},
-  { "SHUTDOWN", 0, 0, 0, ""},
-  { "SIGNED", 0, 0, 0, ""},
-  { "SIMPLE", 0, 0, 0, ""},
-  { "SLAVE", 0, 0, 0, ""},
-  { "SNAPSHOT", 0, 0, 0, ""},
-  { "SMALLINT", 0, 0, 0, ""},
-  { "SOME", 0, 0, 0, ""},
-  { "SONAME", 0, 0, 0, ""},
-  { "SOUNDS", 0, 0, 0, ""},
-  { "SPATIAL", 0, 0, 0, ""},
-  { "SPECIFIC", 0, 0, 0, ""},
-  { "SQL", 0, 0, 0, ""},
-  { "SQLEXCEPTION", 0, 0, 0, ""},
-  { "SQLSTATE", 0, 0, 0, ""},
-  { "SQLWARNING", 0, 0, 0, ""},
-  { "SQL_BIG_RESULT", 0, 0, 0, ""},
-  { "SQL_BUFFER_RESULT", 0, 0, 0, ""},
-  { "SQL_CACHE", 0, 0, 0, ""},
-  { "SQL_CALC_FOUND_ROWS", 0, 0, 0, ""},
-  { "SQL_NO_CACHE", 0, 0, 0, ""},
-  { "SQL_SMALL_RESULT", 0, 0, 0, ""},
-  { "SQL_THREAD", 0, 0, 0, ""},
-  { "SQL_TSI_SECOND", 0, 0, 0, ""},
-  { "SQL_TSI_MINUTE", 0, 0, 0, ""},
-  { "SQL_TSI_HOUR", 0, 0, 0, ""},
-  { "SQL_TSI_DAY", 0, 0, 0, ""},
-  { "SQL_TSI_WEEK", 0, 0, 0, ""},
-  { "SQL_TSI_MONTH", 0, 0, 0, ""},
-  { "SQL_TSI_QUARTER", 0, 0, 0, ""},
-  { "SQL_TSI_YEAR", 0, 0, 0, ""},
-  { "SSL", 0, 0, 0, ""},
-  { "START", 0, 0, 0, ""},
-  { "STARTING", 0, 0, 0, ""},
-  { "STATUS", 0, 0, 0, ""},
-  { "STOP", 0, 0, 0, ""},
-  { "STORAGE", 0, 0, 0, ""},
-  { "STRAIGHT_JOIN", 0, 0, 0, ""},
-  { "STRING", 0, 0, 0, ""},
-  { "STRIPED", 0, 0, 0, ""},
-  { "SUBJECT", 0, 0, 0, ""},
-  { "SUPER", 0, 0, 0, ""},
-  { "SUSPEND", 0, 0, 0, ""},
-  { "TABLE", 0, 0, 0, ""},
-  { "TABLES", 0, 0, 0, ""},
-  { "TABLESPACE", 0, 0, 0, ""},
-  { "TEMPORARY", 0, 0, 0, ""},
-  { "TEMPTABLE", 0, 0, 0, ""},
-  { "TERMINATED", 0, 0, 0, ""},
-  { "TEXT", 0, 0, 0, ""},
-  { "THEN", 0, 0, 0, ""},
-  { "TIME", 0, 0, 0, ""},
-  { "TIMESTAMP", 0, 0, 0, ""},
-  { "TIMESTAMPADD", 0, 0, 0, ""},
-  { "TIMESTAMPDIFF", 0, 0, 0, ""},
-  { "TINYBLOB", 0, 0, 0, ""},
-  { "TINYINT", 0, 0, 0, ""},
-  { "TINYTEXT", 0, 0, 0, ""},
-  { "TO", 0, 0, 0, ""},
-  { "TRAILING", 0, 0, 0, ""},
-  { "TRANSACTION", 0, 0, 0, ""},
-  { "TRIGGER", 0, 0, 0, ""},
-  { "TRIGGERS", 0, 0, 0, ""},
-  { "TRUE", 0, 0, 0, ""},
-  { "TRUNCATE", 0, 0, 0, ""},
-  { "TYPE", 0, 0, 0, ""},
-  { "TYPES", 0, 0, 0, ""},
-  { "UNCOMMITTED", 0, 0, 0, ""},
-  { "UNDEFINED", 0, 0, 0, ""},
-  { "UNDO", 0, 0, 0, ""},
-  { "UNICODE", 0, 0, 0, ""},
-  { "UNION", 0, 0, 0, ""},
-  { "UNIQUE", 0, 0, 0, ""},
-  { "UNKNOWN", 0, 0, 0, ""},
-  { "UNLOCK", 0, 0, 0, ""},
-  { "UNSIGNED", 0, 0, 0, ""},
-  { "UNTIL", 0, 0, 0, ""},
-  { "UPDATE", 0, 0, 0, ""},
-  { "UPGRADE", 0, 0, 0, ""},
-  { "USAGE", 0, 0, 0, ""},
-  { "USE", 0, 0, 0, ""},
-  { "USER", 0, 0, 0, ""},
-  { "USER_RESOURCES", 0, 0, 0, ""},
-  { "USE_FRM", 0, 0, 0, ""},
-  { "USING", 0, 0, 0, ""},
-  { "UTC_DATE", 0, 0, 0, ""},
-  { "UTC_TIME", 0, 0, 0, ""},
-  { "UTC_TIMESTAMP", 0, 0, 0, ""},
-  { "VALUE", 0, 0, 0, ""},
-  { "VALUES", 0, 0, 0, ""},
-  { "VARBINARY", 0, 0, 0, ""},
-  { "VARCHAR", 0, 0, 0, ""},
-  { "VARCHARACTER", 0, 0, 0, ""},
-  { "VARIABLES", 0, 0, 0, ""},
-  { "VARYING", 0, 0, 0, ""},
-  { "WARNINGS", 0, 0, 0, ""},
-  { "WEEK", 0, 0, 0, ""},
-  { "WHEN", 0, 0, 0, ""},
-  { "WHERE", 0, 0, 0, ""},
-  { "WHILE", 0, 0, 0, ""},
-  { "VIEW", 0, 0, 0, ""},
-  { "WITH", 0, 0, 0, ""},
-  { "WORK", 0, 0, 0, ""},
-  { "WRITE", 0, 0, 0, ""},
-  { "X509", 0, 0, 0, ""},
-  { "XOR", 0, 0, 0, ""},
-  { "XA", 0, 0, 0, ""},
-  { "YEAR", 0, 0, 0, ""},
-  { "YEAR_MONTH", 0, 0, 0, ""},
-  { "ZEROFILL", 0, 0, 0, ""},
-  { "ABS", 0, 0, 0, ""},
-  { "ACOS", 0, 0, 0, ""},
-  { "ADDDATE", 0, 0, 0, ""},
-  { "ADDTIME", 0, 0, 0, ""},
-  { "AES_ENCRYPT", 0, 0, 0, ""},
-  { "AES_DECRYPT", 0, 0, 0, ""},
-  { "AREA", 0, 0, 0, ""},
-  { "ASIN", 0, 0, 0, ""},
-  { "ASBINARY", 0, 0, 0, ""},
-  { "ASTEXT", 0, 0, 0, ""},
-  { "ASWKB", 0, 0, 0, ""},
-  { "ASWKT", 0, 0, 0, ""},
-  { "ATAN", 0, 0, 0, ""},
-  { "ATAN2", 0, 0, 0, ""},
-  { "BENCHMARK", 0, 0, 0, ""},
-  { "BIN", 0, 0, 0, ""},
-  { "BIT_COUNT", 0, 0, 0, ""},
-  { "BIT_OR", 0, 0, 0, ""},
-  { "BIT_AND", 0, 0, 0, ""},
-  { "BIT_XOR", 0, 0, 0, ""},
-  { "CAST", 0, 0, 0, ""},
-  { "CEIL", 0, 0, 0, ""},
-  { "CEILING", 0, 0, 0, ""},
-  { "BIT_LENGTH", 0, 0, 0, ""},
-  { "CENTROID", 0, 0, 0, ""},
-  { "CHAR_LENGTH", 0, 0, 0, ""},
-  { "CHARACTER_LENGTH", 0, 0, 0, ""},
-  { "COALESCE", 0, 0, 0, ""},
-  { "COERCIBILITY", 0, 0, 0, ""},
-  { "COMPRESS", 0, 0, 0, ""},
-  { "CONCAT", 0, 0, 0, ""},
-  { "CONCAT_WS", 0, 0, 0, ""},
-  { "CONNECTION_ID", 0, 0, 0, ""},
-  { "CONV", 0, 0, 0, ""},
-  { "CONVERT_TZ", 0, 0, 0, ""},
-  { "COUNT", 0, 0, 0, ""},
-  { "COS", 0, 0, 0, ""},
-  { "COT", 0, 0, 0, ""},
-  { "CRC32", 0, 0, 0, ""},
-  { "CROSSES", 0, 0, 0, ""},
-  { "CURDATE", 0, 0, 0, ""},
-  { "CURTIME", 0, 0, 0, ""},
-  { "DATE_ADD", 0, 0, 0, ""},
-  { "DATEDIFF", 0, 0, 0, ""},
-  { "DATE_FORMAT", 0, 0, 0, ""},
-  { "DATE_SUB", 0, 0, 0, ""},
-  { "DAYNAME", 0, 0, 0, ""},
-  { "DAYOFMONTH", 0, 0, 0, ""},
-  { "DAYOFWEEK", 0, 0, 0, ""},
-  { "DAYOFYEAR", 0, 0, 0, ""},
-  { "DECODE", 0, 0, 0, ""},
-  { "DEGREES", 0, 0, 0, ""},
-  { "DES_ENCRYPT", 0, 0, 0, ""},
-  { "DES_DECRYPT", 0, 0, 0, ""},
-  { "DIMENSION", 0, 0, 0, ""},
-  { "DISJOINT", 0, 0, 0, ""},
-  { "ELT", 0, 0, 0, ""},
-  { "ENCODE", 0, 0, 0, ""},
-  { "ENCRYPT", 0, 0, 0, ""},
-  { "ENDPOINT", 0, 0, 0, ""},
-  { "ENVELOPE", 0, 0, 0, ""},
-  { "EQUALS", 0, 0, 0, ""},
-  { "EXTERIORRING", 0, 0, 0, ""},
-  { "EXTRACT", 0, 0, 0, ""},
-  { "EXP", 0, 0, 0, ""},
-  { "EXPORT_SET", 0, 0, 0, ""},
-  { "FIELD", 0, 0, 0, ""},
-  { "FIND_IN_SET", 0, 0, 0, ""},
-  { "FLOOR", 0, 0, 0, ""},
-  { "FORMAT", 0, 0, 0, ""},
-  { "FOUND_ROWS", 0, 0, 0, ""},
-  { "FROM_DAYS", 0, 0, 0, ""},
-  { "FROM_UNIXTIME", 0, 0, 0, ""},
-  { "GET_LOCK", 0, 0, 0, ""},
-  { "GEOMETRYN", 0, 0, 0, ""},
-  { "GEOMETRYTYPE", 0, 0, 0, ""},
-  { "GEOMCOLLFROMTEXT", 0, 0, 0, ""},
-  { "GEOMCOLLFROMWKB", 0, 0, 0, ""},
-  { "GEOMETRYCOLLECTIONFROMTEXT", 0, 0, 0, ""},
-  { "GEOMETRYCOLLECTIONFROMWKB", 0, 0, 0, ""},
-  { "GEOMETRYFROMTEXT", 0, 0, 0, ""},
-  { "GEOMETRYFROMWKB", 0, 0, 0, ""},
-  { "GEOMFROMTEXT", 0, 0, 0, ""},
-  { "GEOMFROMWKB", 0, 0, 0, ""},
-  { "GLENGTH", 0, 0, 0, ""},
-  { "GREATEST", 0, 0, 0, ""},
-  { "GROUP_CONCAT", 0, 0, 0, ""},
-  { "GROUP_UNIQUE_USERS", 0, 0, 0, ""},
-  { "HEX", 0, 0, 0, ""},
-  { "IFNULL", 0, 0, 0, ""},
-  { "INET_ATON", 0, 0, 0, ""},
-  { "INET_NTOA", 0, 0, 0, ""},
-  { "INSTR", 0, 0, 0, ""},
-  { "INTERIORRINGN", 0, 0, 0, ""},
-  { "INTERSECTS", 0, 0, 0, ""},
-  { "ISCLOSED", 0, 0, 0, ""},
-  { "ISEMPTY", 0, 0, 0, ""},
-  { "ISNULL", 0, 0, 0, ""},
-  { "IS_FREE_LOCK", 0, 0, 0, ""},
-  { "IS_USED_LOCK", 0, 0, 0, ""},
-  { "LAST_INSERT_ID", 0, 0, 0, ""},
-  { "ISSIMPLE", 0, 0, 0, ""},
-  { "LAST_DAY", 0, 0, 0, ""},
-  { "LAST_VALUE", 0, 0, 0, ""},
-  { "LCASE", 0, 0, 0, ""},
-  { "LEAST", 0, 0, 0, ""},
-  { "LENGTH", 0, 0, 0, ""},
-  { "LN", 0, 0, 0, ""},
-  { "LINEFROMTEXT", 0, 0, 0, ""},
-  { "LINEFROMWKB", 0, 0, 0, ""},
-  { "LINESTRINGFROMTEXT", 0, 0, 0, ""},
-  { "LINESTRINGFROMWKB", 0, 0, 0, ""},
-  { "LOAD_FILE", 0, 0, 0, ""},
-  { "LOCATE", 0, 0, 0, ""},
-  { "LOG", 0, 0, 0, ""},
-  { "LOG2", 0, 0, 0, ""},
-  { "LOG10", 0, 0, 0, ""},
-  { "LOWER", 0, 0, 0, ""},
-  { "LPAD", 0, 0, 0, ""},
-  { "LTRIM", 0, 0, 0, ""},
-  { "MAKE_SET", 0, 0, 0, ""},
-  { "MAKEDATE", 0, 0, 0, ""},
-  { "MAKETIME", 0, 0, 0, ""},
-  { "MASTER_GTID_WAIT", 0, 0, 0, ""},
-  { "MASTER_POS_WAIT", 0, 0, 0, ""},
-  { "MAX", 0, 0, 0, ""},
-  { "MBRCONTAINS", 0, 0, 0, ""},
-  { "MBRDISJOINT", 0, 0, 0, ""},
-  { "MBREQUAL", 0, 0, 0, ""},
-  { "MBRINTERSECTS", 0, 0, 0, ""},
-  { "MBROVERLAPS", 0, 0, 0, ""},
-  { "MBRTOUCHES", 0, 0, 0, ""},
-  { "MBRWITHIN", 0, 0, 0, ""},
-  { "MD5", 0, 0, 0, ""},
-  { "MID", 0, 0, 0, ""},
-  { "MIN", 0, 0, 0, ""},
-  { "MLINEFROMTEXT", 0, 0, 0, ""},
-  { "MLINEFROMWKB", 0, 0, 0, ""},
-  { "MPOINTFROMTEXT", 0, 0, 0, ""},
-  { "MPOINTFROMWKB", 0, 0, 0, ""},
-  { "MPOLYFROMTEXT", 0, 0, 0, ""},
-  { "MPOLYFROMWKB", 0, 0, 0, ""},
-  { "MONTHNAME", 0, 0, 0, ""},
-  { "MULTILINESTRINGFROMTEXT", 0, 0, 0, ""},
-  { "MULTILINESTRINGFROMWKB", 0, 0, 0, ""},
-  { "MULTIPOINTFROMTEXT", 0, 0, 0, ""},
-  { "MULTIPOINTFROMWKB", 0, 0, 0, ""},
-  { "MULTIPOLYGONFROMTEXT", 0, 0, 0, ""},
-  { "MULTIPOLYGONFROMWKB", 0, 0, 0, ""},
-  { "NAME_CONST", 0, 0, 0, ""},
-  { "NOW", 0, 0, 0, ""},
-  { "NULLIF", 0, 0, 0, ""},
-  { "NUMGEOMETRIES", 0, 0, 0, ""},
-  { "NUMINTERIORRINGS", 0, 0, 0, ""},
-  { "NUMPOINTS", 0, 0, 0, ""},
-  { "OCTET_LENGTH", 0, 0, 0, ""},
-  { "OCT", 0, 0, 0, ""},
-  { "ORD", 0, 0, 0, ""},
-  { "OVERLAPS", 0, 0, 0, ""},
-  { "PERIOD_ADD", 0, 0, 0, ""},
-  { "PERIOD_DIFF", 0, 0, 0, ""},
-  { "PI", 0, 0, 0, ""},
-  { "POINTFROMTEXT", 0, 0, 0, ""},
-  { "POINTFROMWKB", 0, 0, 0, ""},
-  { "POINTN", 0, 0, 0, ""},
-  { "POLYFROMTEXT", 0, 0, 0, ""},
-  { "POLYFROMWKB", 0, 0, 0, ""},
-  { "POLYGONFROMTEXT", 0, 0, 0, ""},
-  { "POLYGONFROMWKB", 0, 0, 0, ""},
-  { "POSITION", 0, 0, 0, ""},
-  { "POW", 0, 0, 0, ""},
-  { "POWER", 0, 0, 0, ""},
-  { "QUOTE", 0, 0, 0, ""},
-  { "RADIANS", 0, 0, 0, ""},
-  { "RAND", 0, 0, 0, ""},
-  { "RELEASE_LOCK", 0, 0, 0, ""},
-  { "REVERSE", 0, 0, 0, ""},
-  { "ROUND", 0, 0, 0, ""},
-  { "ROW_COUNT", 0, 0, 0, ""},
-  { "RPAD", 0, 0, 0, ""},
-  { "RTRIM", 0, 0, 0, ""},
-  { "SEC_TO_TIME", 0, 0, 0, ""},
-  { "SESSION_USER", 0, 0, 0, ""},
-  { "SUBDATE", 0, 0, 0, ""},
-  { "SIGN", 0, 0, 0, ""},
-  { "SIN", 0, 0, 0, ""},
-  { "SHA", 0, 0, 0, ""},
-  { "SHA1", 0, 0, 0, ""},
-  { "SLEEP", 0, 0, 0, ""},
-  { "SOUNDEX", 0, 0, 0, ""},
-  { "SPACE", 0, 0, 0, ""},
-  { "SQRT", 0, 0, 0, ""},
-  { "SRID", 0, 0, 0, ""},
-  { "STARTPOINT", 0, 0, 0, ""},
-  { "STD", 0, 0, 0, ""},
-  { "STDDEV", 0, 0, 0, ""},
-  { "STDDEV_POP", 0, 0, 0, ""},
-  { "STDDEV_SAMP", 0, 0, 0, ""},
-  { "STR_TO_DATE", 0, 0, 0, ""},
-  { "STRCMP", 0, 0, 0, ""},
-  { "SUBSTR", 0, 0, 0, ""},
-  { "SUBSTRING", 0, 0, 0, ""},
-  { "SUBSTRING_INDEX", 0, 0, 0, ""},
-  { "SUBTIME", 0, 0, 0, ""},
-  { "SUM", 0, 0, 0, ""},
-  { "SYSDATE", 0, 0, 0, ""},
-  { "SYSTEM_USER", 0, 0, 0, ""},
-  { "TAN", 0, 0, 0, ""},
-  { "TIME_FORMAT", 0, 0, 0, ""},
-  { "TIME_TO_SEC", 0, 0, 0, ""},
-  { "TIMEDIFF", 0, 0, 0, ""},
-  { "TO_DAYS", 0, 0, 0, ""},
-  { "TOUCHES", 0, 0, 0, ""},
-  { "TRIM", 0, 0, 0, ""},
-  { "UCASE", 0, 0, 0, ""},
-  { "UNCOMPRESS", 0, 0, 0, ""},
-  { "UNCOMPRESSED_LENGTH", 0, 0, 0, ""},
-  { "UNHEX", 0, 0, 0, ""},
-  { "UNIQUE_USERS", 0, 0, 0, ""},
-  { "UNIX_TIMESTAMP", 0, 0, 0, ""},
-  { "UPPER", 0, 0, 0, ""},
-  { "UUID", 0, 0, 0, ""},
-  { "VARIANCE", 0, 0, 0, ""},
-  { "VAR_POP", 0, 0, 0, ""},
-  { "VAR_SAMP", 0, 0, 0, ""},
-  { "VERSION", 0, 0, 0, ""},
-  { "WEEKDAY", 0, 0, 0, ""},
-  { "WEEKOFYEAR", 0, 0, 0, ""},
-  { "WITHIN", 0, 0, 0, ""},
-  { "X", 0, 0, 0, ""},
-  { "Y", 0, 0, 0, ""},
-  { "YEARWEEK", 0, 0, 0, ""},
+  { "ACTION", 0, 0, 0, "", NULL},
+  { "ADD", 0, 0, 0, "", NULL},
+  { "AFTER", 0, 0, 0, "", NULL},
+  { "AGAINST", 0, 0, 0, "", NULL},
+  { "AGGREGATE", 0, 0, 0, "", NULL},
+  { "ALL", 0, 0, 0, "", NULL},
+  { "ALGORITHM", 0, 0, 0, "", NULL},
+  { "ALTER", 0, 0, 0, "", NULL},
+  { "ANALYZE", 0, 0, 0, "", NULL},
+  { "AND", 0, 0, 0, "", NULL},
+  { "ANY", 0, 0, 0, "", NULL},
+  { "AS", 0, 0, 0, "", NULL},
+  { "ASC", 0, 0, 0, "", NULL},
+  { "ASCII", 0, 0, 0, "", NULL},
+  { "ASENSITIVE", 0, 0, 0, "", NULL},
+  { "AUTO_INCREMENT", 0, 0, 0, "", NULL},
+  { "AVG", 0, 0, 0, "", NULL},
+  { "AVG_ROW_LENGTH", 0, 0, 0, "", NULL},
+  { "BACKUP", 0, 0, 0, "", NULL},
+  { "BDB", 0, 0, 0, "", NULL},
+  { "BEFORE", 0, 0, 0, "", NULL},
+  { "BEGIN", 0, 0, 0, "", NULL},
+  { "BERKELEYDB", 0, 0, 0, "", NULL},
+  { "BETWEEN", 0, 0, 0, "", NULL},
+  { "BIGINT", 0, 0, 0, "", NULL},
+  { "BINARY", 0, 0, 0, "", NULL},
+  { "BINLOG", 0, 0, 0, "", NULL},
+  { "BIT", 0, 0, 0, "", NULL},
+  { "BLOB", 0, 0, 0, "", NULL},
+  { "BOOL", 0, 0, 0, "", NULL},
+  { "BOOLEAN", 0, 0, 0, "", NULL},
+  { "BOTH", 0, 0, 0, "", NULL},
+  { "BTREE", 0, 0, 0, "", NULL},
+  { "BY", 0, 0, 0, "", NULL},
+  { "BYTE", 0, 0, 0, "", NULL},
+  { "CACHE", 0, 0, 0, "", NULL},
+  { "CALL", 0, 0, 0, "", NULL},
+  { "CASCADE", 0, 0, 0, "", NULL},
+  { "CASCADED", 0, 0, 0, "", NULL},
+  { "CASE", 0, 0, 0, "", NULL},
+  { "CHAIN", 0, 0, 0, "", NULL},
+  { "CHANGE", 0, 0, 0, "", NULL},
+  { "CHANGED", 0, 0, 0, "", NULL},
+  { "CHAR", 0, 0, 0, "", NULL},
+  { "CHARACTER", 0, 0, 0, "", NULL},
+  { "CHARSET", 0, 0, 0, "", NULL },
+  { "CHECK", 0, 0, 0, "", NULL },
+  { "CHECKSUM", 0, 0, 0, "", NULL },
+  { "CIPHER", 0, 0, 0, "", NULL },
+  { "CLIENT", 0, 0, 0, "", NULL },
+  { "CLOSE", 0, 0, 0, "", NULL },
+  { "CODE", 0, 0, 0, "", NULL },
+  { "COLLATE", 0, 0, 0, "", NULL },
+  { "COLLATION", 0, 0, 0, "", NULL },
+  { "COLUMN", 0, 0, 0, "", NULL },
+  { "COLUMNS", 0, 0, 0, "", NULL },
+  { "COMMENT", 0, 0, 0, "", NULL},
+  { "COMMIT", 0, 0, 0, "", NULL},
+  { "COMMITTED", 0, 0, 0, "", NULL},
+  { "COMPACT", 0, 0, 0, "", NULL},
+  { "COMPRESSED", 0, 0, 0, "", NULL},
+  { "CONCURRENT", 0, 0, 0, "", NULL},
+  { "CONDITION", 0, 0, 0, "", NULL},
+  { "CONNECTION", 0, 0, 0, "", NULL},
+  { "CONSISTENT", 0, 0, 0, "", NULL},
+  { "CONSTRAINT", 0, 0, 0, "", NULL},
+  { "CONTAINS", 0, 0, 0, "", NULL},
+  { "CONTINUE", 0, 0, 0, "", NULL},
+  { "CONVERT", 0, 0, 0, "", NULL},
+  { "CREATE", 0, 0, 0, "", NULL},
+  { "CROSS", 0, 0, 0, "", NULL},
+  { "CUBE", 0, 0, 0, "", NULL},
+  { "CURRENT_DATE", 0, 0, 0, "", NULL},
+  { "CURRENT_TIME", 0, 0, 0, "", NULL},
+  { "CURRENT_TIMESTAMP", 0, 0, 0, "", NULL},
+  { "CURRENT_USER", 0, 0, 0, "", NULL},
+  { "CURSOR", 0, 0, 0, "", NULL},
+  { "DATA", 0, 0, 0, "", NULL},
+  { "DATABASE", 0, 0, 0, "", NULL},
+  { "DATABASES", 0, 0, 0, "", NULL},
+  { "DATE", 0, 0, 0, "", NULL},
+  { "DATETIME", 0, 0, 0, "", NULL},
+  { "DAY", 0, 0, 0, "", NULL},
+  { "DAY_HOUR", 0, 0, 0, "", NULL},
+  { "DAY_MICROSECOND", 0, 0, 0, "", NULL},
+  { "DAY_MINUTE", 0, 0, 0, "", NULL},
+  { "DAY_SECOND", 0, 0, 0, "", NULL},
+  { "DEALLOCATE", 0, 0, 0, "", NULL},     
+  { "DEC", 0, 0, 0, "", NULL},
+  { "DECIMAL", 0, 0, 0, "", NULL},
+  { "DECLARE", 0, 0, 0, "", NULL},
+  { "DEFAULT", 0, 0, 0, "", NULL},
+  { "DEFINER", 0, 0, 0, "", NULL},
+  { "DELAYED", 0, 0, 0, "", NULL},
+  { "DELAY_KEY_WRITE", 0, 0, 0, "", NULL},
+  { "DELETE", 0, 0, 0, "", NULL},
+  { "DESC", 0, 0, 0, "", NULL},
+  { "DESCRIBE", 0, 0, 0, "", NULL},
+  { "DES_KEY_FILE", 0, 0, 0, "", NULL},
+  { "DETERMINISTIC", 0, 0, 0, "", NULL},
+  { "DIRECTORY", 0, 0, 0, "", NULL},
+  { "DISABLE", 0, 0, 0, "", NULL},
+  { "DISCARD", 0, 0, 0, "", NULL},
+  { "DISTINCT", 0, 0, 0, "", NULL},
+  { "DISTINCTROW", 0, 0, 0, "", NULL},
+  { "DIV", 0, 0, 0, "", NULL},
+  { "DO", 0, 0, 0, "", NULL},
+  { "DOUBLE", 0, 0, 0, "", NULL},
+  { "DROP", 0, 0, 0, "", NULL},
+  { "DUAL", 0, 0, 0, "", NULL},
+  { "DUMPFILE", 0, 0, 0, "", NULL},
+  { "DUPLICATE", 0, 0, 0, "", NULL},
+  { "DYNAMIC", 0, 0, 0, "", NULL},
+  { "EACH", 0, 0, 0, "", NULL},
+  { "ELSE", 0, 0, 0, "", NULL},
+  { "ELSEIF", 0, 0, 0, "", NULL},
+  { "ENABLE", 0, 0, 0, "", NULL},
+  { "ENCLOSED", 0, 0, 0, "", NULL},
+  { "END", 0, 0, 0, "", NULL},
+  { "ENGINE", 0, 0, 0, "", NULL},
+  { "ENGINES", 0, 0, 0, "", NULL},
+  { "ENUM", 0, 0, 0, "", NULL},
+  { "ERRORS", 0, 0, 0, "", NULL},
+  { "ESCAPE", 0, 0, 0, "", NULL},
+  { "ESCAPED", 0, 0, 0, "", NULL},
+  { "EVENTS", 0, 0, 0, "", NULL},
+  { "EXECUTE", 0, 0, 0, "", NULL},
+  { "EXISTS", 0, 0, 0, "", NULL},
+  { "EXIT", 0, 0, 0, "", NULL},
+  { "EXPANSION", 0, 0, 0, "", NULL},
+  { "EXPLAIN", 0, 0, 0, "", NULL},
+  { "EXTENDED", 0, 0, 0, "", NULL},
+  { "FALSE", 0, 0, 0, "", NULL},
+  { "FAST", 0, 0, 0, "", NULL},
+  { "FETCH", 0, 0, 0, "", NULL},
+  { "FIELDS", 0, 0, 0, "", NULL},
+  { "FILE", 0, 0, 0, "", NULL},
+  { "FIRST", 0, 0, 0, "", NULL},
+  { "FIXED", 0, 0, 0, "", NULL},
+  { "FLOAT", 0, 0, 0, "", NULL},
+  { "FLOAT4", 0, 0, 0, "", NULL},
+  { "FLOAT8", 0, 0, 0, "", NULL},
+  { "FLUSH", 0, 0, 0, "", NULL},
+  { "FOR", 0, 0, 0, "", NULL},
+  { "FORCE", 0, 0, 0, "", NULL},
+  { "FOREIGN", 0, 0, 0, "", NULL},
+  { "FOUND", 0, 0, 0, "", NULL},
+  { "FROM", 0, 0, 0, "", NULL},
+  { "FULL", 0, 0, 0, "", NULL},
+  { "FULLTEXT", 0, 0, 0, "", NULL},
+  { "FUNCTION", 0, 0, 0, "", NULL},
+  { "GEOMETRY", 0, 0, 0, "", NULL},
+  { "GEOMETRYCOLLECTION", 0, 0, 0, "", NULL},
+  { "GET_FORMAT", 0, 0, 0, "", NULL},
+  { "GLOBAL", 0, 0, 0, "", NULL},
+  { "GRANT", 0, 0, 0, "", NULL},
+  { "GRANTS", 0, 0, 0, "", NULL},
+  { "GROUP", 0, 0, 0, "", NULL},
+  { "HANDLER", 0, 0, 0, "", NULL},
+  { "HASH", 0, 0, 0, "", NULL},
+  { "HAVING", 0, 0, 0, "", NULL},
+  { "HELP", 0, 0, 0, "", NULL},
+  { "HIGH_PRIORITY", 0, 0, 0, "", NULL},
+  { "HOSTS", 0, 0, 0, "", NULL},
+  { "HOUR", 0, 0, 0, "", NULL},
+  { "HOUR_MICROSECOND", 0, 0, 0, "", NULL},
+  { "HOUR_MINUTE", 0, 0, 0, "", NULL},
+  { "HOUR_SECOND", 0, 0, 0, "", NULL},
+  { "IDENTIFIED", 0, 0, 0, "", NULL},
+  { "IF", 0, 0, 0, "", NULL},
+  { "IGNORE", 0, 0, 0, "", NULL},
+  { "IMPORT", 0, 0, 0, "", NULL},
+  { "IN", 0, 0, 0, "", NULL},
+  { "INDEX", 0, 0, 0, "", NULL},
+  { "INDEXES", 0, 0, 0, "", NULL},
+  { "INFILE", 0, 0, 0, "", NULL},
+  { "INNER", 0, 0, 0, "", NULL},
+  { "INNOBASE", 0, 0, 0, "", NULL},
+  { "INNODB", 0, 0, 0, "", NULL},
+  { "INOUT", 0, 0, 0, "", NULL},
+  { "INSENSITIVE", 0, 0, 0, "", NULL},
+  { "INSERT", 0, 0, 0, "", NULL},
+  { "INSERT_METHOD", 0, 0, 0, "", NULL},
+  { "INT", 0, 0, 0, "", NULL},
+  { "INT1", 0, 0, 0, "", NULL},
+  { "INT2", 0, 0, 0, "", NULL},
+  { "INT3", 0, 0, 0, "", NULL},
+  { "INT4", 0, 0, 0, "", NULL},
+  { "INT8", 0, 0, 0, "", NULL},
+  { "INTEGER", 0, 0, 0, "", NULL},
+  { "INTERVAL", 0, 0, 0, "", NULL},
+  { "INTO", 0, 0, 0, "", NULL},
+  { "IO_THREAD", 0, 0, 0, "", NULL},
+  { "IS", 0, 0, 0, "", NULL},
+  { "ISOLATION", 0, 0, 0, "", NULL},
+  { "ISSUER", 0, 0, 0, "", NULL},
+  { "ITERATE", 0, 0, 0, "", NULL},
+  { "INVOKER", 0, 0, 0, "", NULL},
+  { "JOIN", 0, 0, 0, "", NULL},
+  { "KEY", 0, 0, 0, "", NULL},
+  { "KEYS", 0, 0, 0, "", NULL},
+  { "KILL", 0, 0, 0, "", NULL},
+  { "LANGUAGE", 0, 0, 0, "", NULL},
+  { "LAST", 0, 0, 0, "", NULL},
+  { "LEADING", 0, 0, 0, "", NULL},
+  { "LEAVE", 0, 0, 0, "", NULL},
+  { "LEAVES", 0, 0, 0, "", NULL},
+  { "LEFT", 0, 0, 0, "", NULL},
+  { "LEVEL", 0, 0, 0, "", NULL},
+  { "LIKE", 0, 0, 0, "", NULL},
+  { "LIMIT", 0, 0, 0, "", NULL},
+  { "LINES", 0, 0, 0, "", NULL},
+  { "LINESTRING", 0, 0, 0, "", NULL},
+  { "LOAD", 0, 0, 0, "", NULL},
+  { "LOCAL", 0, 0, 0, "", NULL},
+  { "LOCALTIME", 0, 0, 0, "", NULL},
+  { "LOCALTIMESTAMP", 0, 0, 0, "", NULL},
+  { "LOCK", 0, 0, 0, "", NULL},
+  { "LOCKS", 0, 0, 0, "", NULL},
+  { "LOGS", 0, 0, 0, "", NULL},
+  { "LONG", 0, 0, 0, "", NULL},
+  { "LONGBLOB", 0, 0, 0, "", NULL},
+  { "LONGTEXT", 0, 0, 0, "", NULL},
+  { "LOOP", 0, 0, 0, "", NULL},
+  { "LOW_PRIORITY", 0, 0, 0, "", NULL},
+  { "MASTER", 0, 0, 0, "", NULL},
+  { "MASTER_CONNECT_RETRY", 0, 0, 0, "", NULL},
+  { "MASTER_HOST", 0, 0, 0, "", NULL},
+  { "MASTER_LOG_FILE", 0, 0, 0, "", NULL},
+  { "MASTER_LOG_POS", 0, 0, 0, "", NULL},
+  { "MASTER_PASSWORD", 0, 0, 0, "", NULL},
+  { "MASTER_PORT", 0, 0, 0, "", NULL},
+  { "MASTER_SERVER_ID", 0, 0, 0, "", NULL},
+  { "MASTER_SSL", 0, 0, 0, "", NULL},
+  { "MASTER_SSL_CA", 0, 0, 0, "", NULL},
+  { "MASTER_SSL_CAPATH", 0, 0, 0, "", NULL},
+  { "MASTER_SSL_CERT", 0, 0, 0, "", NULL},
+  { "MASTER_SSL_CIPHER", 0, 0, 0, "", NULL},
+  { "MASTER_SSL_KEY", 0, 0, 0, "", NULL},
+  { "MASTER_USER", 0, 0, 0, "", NULL},
+  { "MATCH", 0, 0, 0, "", NULL},
+  { "MAX_CONNECTIONS_PER_HOUR", 0, 0, 0, "", NULL},
+  { "MAX_QUERIES_PER_HOUR", 0, 0, 0, "", NULL},
+  { "MAX_ROWS", 0, 0, 0, "", NULL},
+  { "MAX_UPDATES_PER_HOUR", 0, 0, 0, "", NULL},
+  { "MAX_USER_CONNECTIONS", 0, 0, 0, "", NULL},
+  { "MEDIUM", 0, 0, 0, "", NULL},
+  { "MEDIUMBLOB", 0, 0, 0, "", NULL},
+  { "MEDIUMINT", 0, 0, 0, "", NULL},
+  { "MEDIUMTEXT", 0, 0, 0, "", NULL},
+  { "MERGE", 0, 0, 0, "", NULL},
+  { "MICROSECOND", 0, 0, 0, "", NULL},
+  { "MIDDLEINT", 0, 0, 0, "", NULL},
+  { "MIGRATE", 0, 0, 0, "", NULL},
+  { "MINUTE", 0, 0, 0, "", NULL},
+  { "MINUTE_MICROSECOND", 0, 0, 0, "", NULL},
+  { "MINUTE_SECOND", 0, 0, 0, "", NULL},
+  { "MIN_ROWS", 0, 0, 0, "", NULL},
+  { "MOD", 0, 0, 0, "", NULL},
+  { "MODE", 0, 0, 0, "", NULL},
+  { "MODIFIES", 0, 0, 0, "", NULL},
+  { "MODIFY", 0, 0, 0, "", NULL},
+  { "MONTH", 0, 0, 0, "", NULL},
+  { "MULTILINESTRING", 0, 0, 0, "", NULL},
+  { "MULTIPOINT", 0, 0, 0, "", NULL},
+  { "MULTIPOLYGON", 0, 0, 0, "", NULL},
+  { "MUTEX", 0, 0, 0, "", NULL},
+  { "NAME", 0, 0, 0, "", NULL},
+  { "NAMES", 0, 0, 0, "", NULL},
+  { "NATIONAL", 0, 0, 0, "", NULL},
+  { "NATURAL", 0, 0, 0, "", NULL},
+  { "NCHAR", 0, 0, 0, "", NULL},
+  { "NEW", 0, 0, 0, "", NULL},
+  { "NEXT", 0, 0, 0, "", NULL},
+  { "NO", 0, 0, 0, "", NULL},
+  { "NONE", 0, 0, 0, "", NULL},
+  { "NOT", 0, 0, 0, "", NULL},
+  { "NO_WRITE_TO_BINLOG", 0, 0, 0, "", NULL},
+  { "NULL", 0, 0, 0, "", NULL},
+  { "NUMERIC", 0, 0, 0, "", NULL},
+  { "NVARCHAR", 0, 0, 0, "", NULL},
+  { "OFFSET", 0, 0, 0, "", NULL},
+  { "OLD_PASSWORD", 0, 0, 0, "", NULL},
+  { "ON", 0, 0, 0, "", NULL},
+  { "ONE", 0, 0, 0, "", NULL},
+  { "OPEN", 0, 0, 0, "", NULL},
+  { "OPTIMIZE", 0, 0, 0, "", NULL},
+  { "OPTION", 0, 0, 0, "", NULL},
+  { "OPTIONALLY", 0, 0, 0, "", NULL},
+  { "OR", 0, 0, 0, "", NULL},
+  { "ORDER", 0, 0, 0, "", NULL},
+  { "OUT", 0, 0, 0, "", NULL},
+  { "OUTER", 0, 0, 0, "", NULL},
+  { "OUTFILE", 0, 0, 0, "", NULL},
+  { "PACK_KEYS", 0, 0, 0, "", NULL},
+  { "PARTIAL", 0, 0, 0, "", NULL},
+  { "PASSWORD", 0, 0, 0, "", NULL},
+  { "PHASE", 0, 0, 0, "", NULL},
+  { "POINT", 0, 0, 0, "", NULL},
+  { "POLYGON", 0, 0, 0, "", NULL},
+  { "PRECISION", 0, 0, 0, "", NULL},
+  { "PREPARE", 0, 0, 0, "", NULL},
+  { "PREV", 0, 0, 0, "", NULL},
+  { "PRIMARY", 0, 0, 0, "", NULL},
+  { "PRIVILEGES", 0, 0, 0, "", NULL},
+  { "PROCEDURE", 0, 0, 0, "", NULL},
+  { "PROCESS", 0, 0, 0, "", NULL},
+  { "PROCESSLIST", 0, 0, 0, "", NULL},
+  { "PURGE", 0, 0, 0, "", NULL},
+  { "QUARTER", 0, 0, 0, "", NULL},
+  { "QUERY", 0, 0, 0, "", NULL},
+  { "QUICK", 0, 0, 0, "", NULL},
+  { "READ", 0, 0, 0, "", NULL},
+  { "READS", 0, 0, 0, "", NULL},
+  { "REAL", 0, 0, 0, "", NULL},
+  { "RECOVER", 0, 0, 0, "", NULL},
+  { "REDUNDANT", 0, 0, 0, "", NULL},
+  { "REFERENCES", 0, 0, 0, "", NULL},
+  { "REGEXP", 0, 0, 0, "", NULL},
+  { "RELAY_LOG_FILE", 0, 0, 0, "", NULL},
+  { "RELAY_LOG_POS", 0, 0, 0, "", NULL},
+  { "RELAY_THREAD", 0, 0, 0, "", NULL},
+  { "RELEASE", 0, 0, 0, "", NULL},
+  { "RELOAD", 0, 0, 0, "", NULL},
+  { "RENAME", 0, 0, 0, "", NULL},
+  { "REPAIR", 0, 0, 0, "", NULL},
+  { "REPEATABLE", 0, 0, 0, "", NULL},
+  { "REPLACE", 0, 0, 0, "", NULL},
+  { "REPLICATION", 0, 0, 0, "", NULL},
+  { "REPEAT", 0, 0, 0, "", NULL},
+  { "REQUIRE", 0, 0, 0, "", NULL},
+  { "RESET", 0, 0, 0, "", NULL},
+  { "RESTORE", 0, 0, 0, "", NULL},
+  { "RESTRICT", 0, 0, 0, "", NULL},
+  { "RESUME", 0, 0, 0, "", NULL},
+  { "RETURN", 0, 0, 0, "", NULL},
+  { "RETURNS", 0, 0, 0, "", NULL},
+  { "REVOKE", 0, 0, 0, "", NULL},
+  { "RIGHT", 0, 0, 0, "", NULL},
+  { "RLIKE", 0, 0, 0, "", NULL},
+  { "ROLLBACK", 0, 0, 0, "", NULL},
+  { "ROLLUP", 0, 0, 0, "", NULL},
+  { "ROUTINE", 0, 0, 0, "", NULL},
+  { "ROW", 0, 0, 0, "", NULL},
+  { "ROWS", 0, 0, 0, "", NULL},
+  { "ROW_FORMAT", 0, 0, 0, "", NULL},
+  { "RTREE", 0, 0, 0, "", NULL},
+  { "SAVEPOINT", 0, 0, 0, "", NULL},
+  { "SCHEMA", 0, 0, 0, "", NULL},
+  { "SCHEMAS", 0, 0, 0, "", NULL},
+  { "SECOND", 0, 0, 0, "", NULL},
+  { "SECOND_MICROSECOND", 0, 0, 0, "", NULL},
+  { "SECURITY", 0, 0, 0, "", NULL},
+  { "SELECT", 0, 0, 0, "", NULL},
+  { "SENSITIVE", 0, 0, 0, "", NULL},
+  { "SEPARATOR", 0, 0, 0, "", NULL},
+  { "SERIAL", 0, 0, 0, "", NULL},
+  { "SERIALIZABLE", 0, 0, 0, "", NULL},
+  { "SESSION", 0, 0, 0, "", NULL},
+  { "SET", 0, 0, 0, "", NULL},
+  { "SHARE", 0, 0, 0, "", NULL},
+  { "SHOW", 0, 0, 0, "", NULL},
+  { "SHUTDOWN", 0, 0, 0, "", NULL},
+  { "SIGNED", 0, 0, 0, "", NULL},
+  { "SIMPLE", 0, 0, 0, "", NULL},
+  { "SLAVE", 0, 0, 0, "", NULL},
+  { "SNAPSHOT", 0, 0, 0, "", NULL},
+  { "SMALLINT", 0, 0, 0, "", NULL},
+  { "SOME", 0, 0, 0, "", NULL},
+  { "SONAME", 0, 0, 0, "", NULL},
+  { "SOUNDS", 0, 0, 0, "", NULL},
+  { "SPATIAL", 0, 0, 0, "", NULL},
+  { "SPECIFIC", 0, 0, 0, "", NULL},
+  { "SQL", 0, 0, 0, "", NULL},
+  { "SQLEXCEPTION", 0, 0, 0, "", NULL},
+  { "SQLSTATE", 0, 0, 0, "", NULL},
+  { "SQLWARNING", 0, 0, 0, "", NULL},
+  { "SQL_BIG_RESULT", 0, 0, 0, "", NULL},
+  { "SQL_BUFFER_RESULT", 0, 0, 0, "", NULL},
+  { "SQL_CACHE", 0, 0, 0, "", NULL},
+  { "SQL_CALC_FOUND_ROWS", 0, 0, 0, "", NULL},
+  { "SQL_NO_CACHE", 0, 0, 0, "", NULL},
+  { "SQL_SMALL_RESULT", 0, 0, 0, "", NULL},
+  { "SQL_THREAD", 0, 0, 0, "", NULL},
+  { "SQL_TSI_SECOND", 0, 0, 0, "", NULL},
+  { "SQL_TSI_MINUTE", 0, 0, 0, "", NULL},
+  { "SQL_TSI_HOUR", 0, 0, 0, "", NULL},
+  { "SQL_TSI_DAY", 0, 0, 0, "", NULL},
+  { "SQL_TSI_WEEK", 0, 0, 0, "", NULL},
+  { "SQL_TSI_MONTH", 0, 0, 0, "", NULL},
+  { "SQL_TSI_QUARTER", 0, 0, 0, "", NULL},
+  { "SQL_TSI_YEAR", 0, 0, 0, "", NULL},
+  { "SSL", 0, 0, 0, "", NULL},
+  { "START", 0, 0, 0, "", NULL},
+  { "STARTING", 0, 0, 0, "", NULL},
+  { "STATUS", 0, 0, 0, "", NULL},
+  { "STOP", 0, 0, 0, "", NULL},
+  { "STORAGE", 0, 0, 0, "", NULL},
+  { "STRAIGHT_JOIN", 0, 0, 0, "", NULL},
+  { "STRING", 0, 0, 0, "", NULL},
+  { "STRIPED", 0, 0, 0, "", NULL},
+  { "SUBJECT", 0, 0, 0, "", NULL},
+  { "SUPER", 0, 0, 0, "", NULL},
+  { "SUSPEND", 0, 0, 0, "", NULL},
+  { "TABLE", 0, 0, 0, "", NULL},
+  { "TABLES", 0, 0, 0, "", NULL},
+  { "TABLESPACE", 0, 0, 0, "", NULL},
+  { "TEMPORARY", 0, 0, 0, "", NULL},
+  { "TEMPTABLE", 0, 0, 0, "", NULL},
+  { "TERMINATED", 0, 0, 0, "", NULL},
+  { "TEXT", 0, 0, 0, "", NULL},
+  { "THEN", 0, 0, 0, "", NULL},
+  { "TIME", 0, 0, 0, "", NULL},
+  { "TIMESTAMP", 0, 0, 0, "", NULL},
+  { "TIMESTAMPADD", 0, 0, 0, "", NULL},
+  { "TIMESTAMPDIFF", 0, 0, 0, "", NULL},
+  { "TINYBLOB", 0, 0, 0, "", NULL},
+  { "TINYINT", 0, 0, 0, "", NULL},
+  { "TINYTEXT", 0, 0, 0, "", NULL},
+  { "TO", 0, 0, 0, "", NULL},
+  { "TRAILING", 0, 0, 0, "", NULL},
+  { "TRANSACTION", 0, 0, 0, "", NULL},
+  { "TRIGGER", 0, 0, 0, "", NULL},
+  { "TRIGGERS", 0, 0, 0, "", NULL},
+  { "TRUE", 0, 0, 0, "", NULL},
+  { "TRUNCATE", 0, 0, 0, "", NULL},
+  { "TYPE", 0, 0, 0, "", NULL},
+  { "TYPES", 0, 0, 0, "", NULL},
+  { "UNCOMMITTED", 0, 0, 0, "", NULL},
+  { "UNDEFINED", 0, 0, 0, "", NULL},
+  { "UNDO", 0, 0, 0, "", NULL},
+  { "UNICODE", 0, 0, 0, "", NULL},
+  { "UNION", 0, 0, 0, "", NULL},
+  { "UNIQUE", 0, 0, 0, "", NULL},
+  { "UNKNOWN", 0, 0, 0, "", NULL},
+  { "UNLOCK", 0, 0, 0, "", NULL},
+  { "UNSIGNED", 0, 0, 0, "", NULL},
+  { "UNTIL", 0, 0, 0, "", NULL},
+  { "UPDATE", 0, 0, 0, "", NULL},
+  { "UPGRADE", 0, 0, 0, "", NULL},
+  { "USAGE", 0, 0, 0, "", NULL},
+  { "USE", 0, 0, 0, "", NULL},
+  { "USER", 0, 0, 0, "", NULL},
+  { "USER_RESOURCES", 0, 0, 0, "", NULL},
+  { "USE_FRM", 0, 0, 0, "", NULL},
+  { "USING", 0, 0, 0, "", NULL},
+  { "UTC_DATE", 0, 0, 0, "", NULL},
+  { "UTC_TIME", 0, 0, 0, "", NULL},
+  { "UTC_TIMESTAMP", 0, 0, 0, "", NULL},
+  { "VALUE", 0, 0, 0, "", NULL},
+  { "VALUES", 0, 0, 0, "", NULL},
+  { "VARBINARY", 0, 0, 0, "", NULL},
+  { "VARCHAR", 0, 0, 0, "", NULL},
+  { "VARCHARACTER", 0, 0, 0, "", NULL},
+  { "VARIABLES", 0, 0, 0, "", NULL},
+  { "VARYING", 0, 0, 0, "", NULL},
+  { "WARNINGS", 0, 0, 0, "", NULL},
+  { "WEEK", 0, 0, 0, "", NULL},
+  { "WHEN", 0, 0, 0, "", NULL},
+  { "WHERE", 0, 0, 0, "", NULL},
+  { "WHILE", 0, 0, 0, "", NULL},
+  { "VIEW", 0, 0, 0, "", NULL},
+  { "WITH", 0, 0, 0, "", NULL},
+  { "WORK", 0, 0, 0, "", NULL},
+  { "WRITE", 0, 0, 0, "", NULL},
+  { "X509", 0, 0, 0, "", NULL},
+  { "XOR", 0, 0, 0, "", NULL},
+  { "XA", 0, 0, 0, "", NULL},
+  { "YEAR", 0, 0, 0, "", NULL},
+  { "YEAR_MONTH", 0, 0, 0, "", NULL},
+  { "ZEROFILL", 0, 0, 0, "", NULL},
+  { "ABS", 0, 0, 0, "", NULL},
+  { "ACOS", 0, 0, 0, "", NULL},
+  { "ADDDATE", 0, 0, 0, "", NULL},
+  { "ADDTIME", 0, 0, 0, "", NULL},
+  { "AES_ENCRYPT", 0, 0, 0, "", NULL},
+  { "AES_DECRYPT", 0, 0, 0, "", NULL},
+  { "AREA", 0, 0, 0, "", NULL},
+  { "ASIN", 0, 0, 0, "", NULL},
+  { "ASBINARY", 0, 0, 0, "", NULL},
+  { "ASTEXT", 0, 0, 0, "", NULL},
+  { "ASWKB", 0, 0, 0, "", NULL},
+  { "ASWKT", 0, 0, 0, "", NULL},
+  { "ATAN", 0, 0, 0, "", NULL},
+  { "ATAN2", 0, 0, 0, "", NULL},
+  { "BENCHMARK", 0, 0, 0, "", NULL},
+  { "BIN", 0, 0, 0, "", NULL},
+  { "BIT_COUNT", 0, 0, 0, "", NULL},
+  { "BIT_OR", 0, 0, 0, "", NULL},
+  { "BIT_AND", 0, 0, 0, "", NULL},
+  { "BIT_XOR", 0, 0, 0, "", NULL},
+  { "CAST", 0, 0, 0, "", NULL},
+  { "CEIL", 0, 0, 0, "", NULL},
+  { "CEILING", 0, 0, 0, "", NULL},
+  { "BIT_LENGTH", 0, 0, 0, "", NULL},
+  { "CENTROID", 0, 0, 0, "", NULL},
+  { "CHAR_LENGTH", 0, 0, 0, "", NULL},
+  { "CHARACTER_LENGTH", 0, 0, 0, "", NULL},
+  { "COALESCE", 0, 0, 0, "", NULL},
+  { "COERCIBILITY", 0, 0, 0, "", NULL},
+  { "COMPRESS", 0, 0, 0, "", NULL},
+  { "CONCAT", 0, 0, 0, "", NULL},
+  { "CONCAT_WS", 0, 0, 0, "", NULL},
+  { "CONNECTION_ID", 0, 0, 0, "", NULL},
+  { "CONV", 0, 0, 0, "", NULL},
+  { "CONVERT_TZ", 0, 0, 0, "", NULL},
+  { "COUNT", 0, 0, 0, "", NULL},
+  { "COS", 0, 0, 0, "", NULL},
+  { "COT", 0, 0, 0, "", NULL},
+  { "CRC32", 0, 0, 0, "", NULL},
+  { "CROSSES", 0, 0, 0, "", NULL},
+  { "CURDATE", 0, 0, 0, "", NULL},
+  { "CURTIME", 0, 0, 0, "", NULL},
+  { "DATE_ADD", 0, 0, 0, "", NULL},
+  { "DATEDIFF", 0, 0, 0, "", NULL},
+  { "DATE_FORMAT", 0, 0, 0, "", NULL},
+  { "DATE_SUB", 0, 0, 0, "", NULL},
+  { "DAYNAME", 0, 0, 0, "", NULL},
+  { "DAYOFMONTH", 0, 0, 0, "", NULL},
+  { "DAYOFWEEK", 0, 0, 0, "", NULL},
+  { "DAYOFYEAR", 0, 0, 0, "", NULL},
+  { "DECODE", 0, 0, 0, "", NULL},
+  { "DEGREES", 0, 0, 0, "", NULL},
+  { "DES_ENCRYPT", 0, 0, 0, "", NULL},
+  { "DES_DECRYPT", 0, 0, 0, "", NULL},
+  { "DIMENSION", 0, 0, 0, "", NULL},
+  { "DISJOINT", 0, 0, 0, "", NULL},
+  { "ELT", 0, 0, 0, "", NULL},
+  { "ENCODE", 0, 0, 0, "", NULL},
+  { "ENCRYPT", 0, 0, 0, "", NULL},
+  { "ENDPOINT", 0, 0, 0, "", NULL},
+  { "ENVELOPE", 0, 0, 0, "", NULL},
+  { "EQUALS", 0, 0, 0, "", NULL},
+  { "EXTERIORRING", 0, 0, 0, "", NULL},
+  { "EXTRACT", 0, 0, 0, "", NULL},
+  { "EXP", 0, 0, 0, "", NULL},
+  { "EXPORT_SET", 0, 0, 0, "", NULL},
+  { "FIELD", 0, 0, 0, "", NULL},
+  { "FIND_IN_SET", 0, 0, 0, "", NULL},
+  { "FLOOR", 0, 0, 0, "", NULL},
+  { "FORMAT", 0, 0, 0, "", NULL},
+  { "FOUND_ROWS", 0, 0, 0, "", NULL},
+  { "FROM_DAYS", 0, 0, 0, "", NULL},
+  { "FROM_UNIXTIME", 0, 0, 0, "", NULL},
+  { "GET_LOCK", 0, 0, 0, "", NULL},
+  { "GEOMETRYN", 0, 0, 0, "", NULL},
+  { "GEOMETRYTYPE", 0, 0, 0, "", NULL},
+  { "GEOMCOLLFROMTEXT", 0, 0, 0, "", NULL},
+  { "GEOMCOLLFROMWKB", 0, 0, 0, "", NULL},
+  { "GEOMETRYCOLLECTIONFROMTEXT", 0, 0, 0, "", NULL},
+  { "GEOMETRYCOLLECTIONFROMWKB", 0, 0, 0, "", NULL},
+  { "GEOMETRYFROMTEXT", 0, 0, 0, "", NULL},
+  { "GEOMETRYFROMWKB", 0, 0, 0, "", NULL},
+  { "GEOMFROMTEXT", 0, 0, 0, "", NULL},
+  { "GEOMFROMWKB", 0, 0, 0, "", NULL},
+  { "GLENGTH", 0, 0, 0, "", NULL},
+  { "GREATEST", 0, 0, 0, "", NULL},
+  { "GROUP_CONCAT", 0, 0, 0, "", NULL},
+  { "GROUP_UNIQUE_USERS", 0, 0, 0, "", NULL},
+  { "HEX", 0, 0, 0, "", NULL},
+  { "IFNULL", 0, 0, 0, "", NULL},
+  { "INET_ATON", 0, 0, 0, "", NULL},
+  { "INET_NTOA", 0, 0, 0, "", NULL},
+  { "INSTR", 0, 0, 0, "", NULL},
+  { "INTERIORRINGN", 0, 0, 0, "", NULL},
+  { "INTERSECTS", 0, 0, 0, "", NULL},
+  { "ISCLOSED", 0, 0, 0, "", NULL},
+  { "ISEMPTY", 0, 0, 0, "", NULL},
+  { "ISNULL", 0, 0, 0, "", NULL},
+  { "IS_FREE_LOCK", 0, 0, 0, "", NULL},
+  { "IS_USED_LOCK", 0, 0, 0, "", NULL},
+  { "LAST_INSERT_ID", 0, 0, 0, "", NULL},
+  { "ISSIMPLE", 0, 0, 0, "", NULL},
+  { "LAST_DAY", 0, 0, 0, "", NULL},
+  { "LAST_VALUE", 0, 0, 0, "", NULL},
+  { "LCASE", 0, 0, 0, "", NULL},
+  { "LEAST", 0, 0, 0, "", NULL},
+  { "LENGTH", 0, 0, 0, "", NULL},
+  { "LN", 0, 0, 0, "", NULL},
+  { "LINEFROMTEXT", 0, 0, 0, "", NULL},
+  { "LINEFROMWKB", 0, 0, 0, "", NULL},
+  { "LINESTRINGFROMTEXT", 0, 0, 0, "", NULL},
+  { "LINESTRINGFROMWKB", 0, 0, 0, "", NULL},
+  { "LOAD_FILE", 0, 0, 0, "", NULL},
+  { "LOCATE", 0, 0, 0, "", NULL},
+  { "LOG", 0, 0, 0, "", NULL},
+  { "LOG2", 0, 0, 0, "", NULL},
+  { "LOG10", 0, 0, 0, "", NULL},
+  { "LOWER", 0, 0, 0, "", NULL},
+  { "LPAD", 0, 0, 0, "", NULL},
+  { "LTRIM", 0, 0, 0, "", NULL},
+  { "MAKE_SET", 0, 0, 0, "", NULL},
+  { "MAKEDATE", 0, 0, 0, "", NULL},
+  { "MAKETIME", 0, 0, 0, "", NULL},
+  { "MASTER_GTID_WAIT", 0, 0, 0, "", NULL},
+  { "MASTER_POS_WAIT", 0, 0, 0, "", NULL},
+  { "MAX", 0, 0, 0, "", NULL},
+  { "MBRCONTAINS", 0, 0, 0, "", NULL},
+  { "MBRDISJOINT", 0, 0, 0, "", NULL},
+  { "MBREQUAL", 0, 0, 0, "", NULL},
+  { "MBRINTERSECTS", 0, 0, 0, "", NULL},
+  { "MBROVERLAPS", 0, 0, 0, "", NULL},
+  { "MBRTOUCHES", 0, 0, 0, "", NULL},
+  { "MBRWITHIN", 0, 0, 0, "", NULL},
+  { "MD5", 0, 0, 0, "", NULL},
+  { "MID", 0, 0, 0, "", NULL},
+  { "MIN", 0, 0, 0, "", NULL},
+  { "MLINEFROMTEXT", 0, 0, 0, "", NULL},
+  { "MLINEFROMWKB", 0, 0, 0, "", NULL},
+  { "MPOINTFROMTEXT", 0, 0, 0, "", NULL},
+  { "MPOINTFROMWKB", 0, 0, 0, "", NULL},
+  { "MPOLYFROMTEXT", 0, 0, 0, "", NULL},
+  { "MPOLYFROMWKB", 0, 0, 0, "", NULL},
+  { "MONTHNAME", 0, 0, 0, "", NULL},
+  { "MULTILINESTRINGFROMTEXT", 0, 0, 0, "", NULL},
+  { "MULTILINESTRINGFROMWKB", 0, 0, 0, "", NULL},
+  { "MULTIPOINTFROMTEXT", 0, 0, 0, "", NULL},
+  { "MULTIPOINTFROMWKB", 0, 0, 0, "", NULL},
+  { "MULTIPOLYGONFROMTEXT", 0, 0, 0, "", NULL},
+  { "MULTIPOLYGONFROMWKB", 0, 0, 0, "", NULL},
+  { "NAME_CONST", 0, 0, 0, "", NULL},
+  { "NOW", 0, 0, 0, "", NULL},
+  { "NULLIF", 0, 0, 0, "", NULL},
+  { "NUMGEOMETRIES", 0, 0, 0, "", NULL},
+  { "NUMINTERIORRINGS", 0, 0, 0, "", NULL},
+  { "NUMPOINTS", 0, 0, 0, "", NULL},
+  { "OCTET_LENGTH", 0, 0, 0, "", NULL},
+  { "OCT", 0, 0, 0, "", NULL},
+  { "ORD", 0, 0, 0, "", NULL},
+  { "OVERLAPS", 0, 0, 0, "", NULL},
+  { "PERIOD_ADD", 0, 0, 0, "", NULL},
+  { "PERIOD_DIFF", 0, 0, 0, "", NULL},
+  { "PI", 0, 0, 0, "", NULL},
+  { "POINTFROMTEXT", 0, 0, 0, "", NULL},
+  { "POINTFROMWKB", 0, 0, 0, "", NULL},
+  { "POINTN", 0, 0, 0, "", NULL},
+  { "POLYFROMTEXT", 0, 0, 0, "", NULL},
+  { "POLYFROMWKB", 0, 0, 0, "", NULL},
+  { "POLYGONFROMTEXT", 0, 0, 0, "", NULL},
+  { "POLYGONFROMWKB", 0, 0, 0, "", NULL},
+  { "POSITION", 0, 0, 0, "", NULL},
+  { "POW", 0, 0, 0, "", NULL},
+  { "POWER", 0, 0, 0, "", NULL},
+  { "QUOTE", 0, 0, 0, "", NULL},
+  { "RADIANS", 0, 0, 0, "", NULL},
+  { "RAND", 0, 0, 0, "", NULL},
+  { "RELEASE_LOCK", 0, 0, 0, "", NULL},
+  { "REVERSE", 0, 0, 0, "", NULL},
+  { "ROUND", 0, 0, 0, "", NULL},
+  { "ROW_COUNT", 0, 0, 0, "", NULL},
+  { "RPAD", 0, 0, 0, "", NULL},
+  { "RTRIM", 0, 0, 0, "", NULL},
+  { "SEC_TO_TIME", 0, 0, 0, "", NULL},
+  { "SESSION_USER", 0, 0, 0, "", NULL},
+  { "SUBDATE", 0, 0, 0, "", NULL},
+  { "SIGN", 0, 0, 0, "", NULL},
+  { "SIN", 0, 0, 0, "", NULL},
+  { "SHA", 0, 0, 0, "", NULL},
+  { "SHA1", 0, 0, 0, "", NULL},
+  { "SLEEP", 0, 0, 0, "", NULL},
+  { "SOUNDEX", 0, 0, 0, "", NULL},
+  { "SPACE", 0, 0, 0, "", NULL},
+  { "SQRT", 0, 0, 0, "", NULL},
+  { "SRID", 0, 0, 0, "", NULL},
+  { "STARTPOINT", 0, 0, 0, "", NULL},
+  { "STD", 0, 0, 0, "", NULL},
+  { "STDDEV", 0, 0, 0, "", NULL},
+  { "STDDEV_POP", 0, 0, 0, "", NULL},
+  { "STDDEV_SAMP", 0, 0, 0, "", NULL},
+  { "STR_TO_DATE", 0, 0, 0, "", NULL},
+  { "STRCMP", 0, 0, 0, "", NULL},
+  { "SUBSTR", 0, 0, 0, "", NULL},
+  { "SUBSTRING", 0, 0, 0, "", NULL},
+  { "SUBSTRING_INDEX", 0, 0, 0, "", NULL},
+  { "SUBTIME", 0, 0, 0, "", NULL},
+  { "SUM", 0, 0, 0, "", NULL},
+  { "SYSDATE", 0, 0, 0, "", NULL},
+  { "SYSTEM_USER", 0, 0, 0, "", NULL},
+  { "TAN", 0, 0, 0, "", NULL},
+  { "TIME_FORMAT", 0, 0, 0, "", NULL},
+  { "TIME_TO_SEC", 0, 0, 0, "", NULL},
+  { "TIMEDIFF", 0, 0, 0, "", NULL},
+  { "TO_DAYS", 0, 0, 0, "", NULL},
+  { "TOUCHES", 0, 0, 0, "", NULL},
+  { "TRIM", 0, 0, 0, "", NULL},
+  { "UCASE", 0, 0, 0, "", NULL},
+  { "UNCOMPRESS", 0, 0, 0, "", NULL},
+  { "UNCOMPRESSED_LENGTH", 0, 0, 0, "", NULL},
+  { "UNHEX", 0, 0, 0, "", NULL},
+  { "UNIQUE_USERS", 0, 0, 0, "", NULL},
+  { "UNIX_TIMESTAMP", 0, 0, 0, "", NULL},
+  { "UPPER", 0, 0, 0, "", NULL},
+  { "UUID", 0, 0, 0, "", NULL},
+  { "VARIANCE", 0, 0, 0, "", NULL},
+  { "VAR_POP", 0, 0, 0, "", NULL},
+  { "VAR_SAMP", 0, 0, 0, "", NULL},
+  { "VERSION", 0, 0, 0, "", NULL},
+  { "WEEKDAY", 0, 0, 0, "", NULL},
+  { "WEEKOFYEAR", 0, 0, 0, "", NULL},
+  { "WITHIN", 0, 0, 0, "", NULL},
+  { "X", 0, 0, 0, "", NULL},
+  { "Y", 0, 0, 0, "", NULL},
+  { "YEARWEEK", 0, 0, 0, "", NULL},
   /* end sentinel */
-  { (char *)NULL,       0, 0, 0, ""}
+  { (char *)NULL,       0, 0, 0, "", NULL}
 };
 
 #define OB_MAX_NUM_LENGTH 128
@@ -1430,8 +1444,8 @@ my_bool is_command_valid(const char* name) {
   int i = 0;
   my_bool ret = true;
   for (i = 0; i < disable_command_count; i++) {
-    if (strlen(disable_comands[i]) == strlen(name) 
-      && !strncasecmp(disable_comands[i], name, strlen(name))) {
+    if (strlen(disable_comands[i]) == strlen(name) &&
+      !strncasecmp(disable_comands[i], name, strlen(name))) {
       ret = false;
       break;
     }
@@ -1452,6 +1466,28 @@ static void fmt_str(char* p_in, int p_in_len, char* p_out, int p_out_len){
     }
   }
 }
+
+#ifndef _WIN32
+#include <termios.h>
+int sh_getch(void) {
+  int cr;
+  struct termios nts, ots;
+
+  if (tcgetattr(0, &ots) < 0) // 得到当前终端(0表示标准输入)的设置
+    return EOF;
+
+  nts = ots;
+  cfmakeraw(&nts); // 设置终端为Raw原始模式，该模式下所有的输入数据以字节为单位被处理
+  if (tcsetattr(0, TCSANOW, &nts) < 0) // 设置上更改之后的设置
+    return EOF;
+
+  cr = getchar();
+  if (tcsetattr(0, TCSANOW, &ots) < 0) // 设置还原成老的模式
+    return EOF;
+
+  return cr;
+}
+#endif
 
 int main(int argc,char *argv[])
 {
@@ -1718,7 +1754,7 @@ sig_handler mysql_end(int sig)
   free_pl_sql();
   free_width_and_format_for_result_value();
   free_pl();
-  free_map_global();
+  free_global_define_map();
   my_end(my_end_arg);
   exit(status.exit_status);
 }
@@ -2510,6 +2546,17 @@ static int read_and_execute(bool interactive)
       break;
     }
     
+    //support oracle mode sqlblanklines, except pl 
+    if (mysql.oracle_mode && !is_sqlblanklines_oracle && !glob_buffer.is_empty()) {
+      char *p = line;
+      while (my_isspace(charset_info, *p)) p++;
+
+      if (strlen(p) == 0 && !is_oracle_pl_escape_sql(glob_buffer.c_ptr_safe(), glob_buffer.length())) {
+        glob_buffer.length(0);
+        continue;
+      }
+    }
+
     //skip space line(buffer is empty)
     {
       char *pos = NULL, *end_of_line = line + strlen(line);
@@ -2524,24 +2571,13 @@ static int read_and_execute(bool interactive)
         continue;
     }
 
-    //support oracle mode prompt
-    char *text = NULL;
-    if (mysql.oracle_mode && !ml_comment && !in_string && glob_buffer.is_empty() && prompt_cmd_oracle(line, &text)) {
-      if (text == NULL) {
-        text = (char*)"";
-      }
-      tee_puts(text, stdout);
-      continue;
-    }
-
-    //support oracle mode sqlblanklines, except pl 
-    if (mysql.oracle_mode && !is_sqlblanklines_oracle && !glob_buffer.is_empty()){
-      char *p = line;
-      while (my_isspace(charset_info, *p)) p++;
-
-      if (strlen(p) == 0 && 0 != (regexec(&pl_escape_sql_re, glob_buffer.c_ptr_safe(), 0, 0, 0))) {
-        glob_buffer.length(0);
+    //support oracle mode command
+    if (last_session_mode && !ml_comment && !in_string && !is_pl_escape_sql) {
+      int ret = run_oracle_command(&glob_buffer, line);
+      if (CMD_STATE_RUNED == ret) {
         continue;
+      } else if (CMD_STATE_ERROR == ret) {
+        break;
       }
     }
     
@@ -2553,7 +2589,7 @@ static int read_and_execute(bool interactive)
     if ((named_cmds || glob_buffer.is_empty())
 	&& !ml_comment && !in_string && (com= find_command(line)))
     {
-      if ((*com->func)(&glob_buffer,line) > 0)
+      if (com->cmdstr && ((*com->func)(&glob_buffer,com->cmdstr) > 0))
 	break;
       if (glob_buffer.is_empty())		// If buffer was emptied
 	in_string=0;
@@ -2635,6 +2671,7 @@ static COMMANDS *find_command(char cmd_char)
 
   if (index >= 0 && is_command_valid(commands[index].name))
   {
+    commands[index].cmdstr = NULL;
     DBUG_PRINT("exit",("found command: %s", commands[index].name));
     DBUG_RETURN(&commands[index]);
   }
@@ -2655,10 +2692,19 @@ static COMMANDS *find_command(char *name)
 {
   uint len;
   char *end;
+  char *str = NULL;
   DBUG_ENTER("find_command");
 
   DBUG_ASSERT(name != NULL);
   DBUG_PRINT("enter", ("name: '%s'", name));
+
+  //demo:/* abc */ conn test/test
+  str = get_trim_comment_sql(name, strlen(name));
+  if (NULL == str) {
+    DBUG_RETURN((COMMANDS *)0);
+  }
+  name = str;
+  DBUG_PRINT("enter", ("str: '%s'", str));
 
   while (my_isspace(charset_info, *name))
     name++;
@@ -2710,12 +2756,12 @@ static COMMANDS *find_command(char *name)
 
   if (index >= 0 && is_command_valid(commands[index].name))
   {
+    commands[index].cmdstr = str;
     DBUG_PRINT("exit", ("found command: %s", commands[index].name));
     DBUG_RETURN(&commands[index]);
   }
   DBUG_RETURN((COMMANDS *) 0);
 }
-
 
 static bool add_line(String &buffer, char *line, size_t line_length,
   char *in_string, bool *ml_comment, bool *is_pl_escape_sql, bool truncated)
@@ -2742,27 +2788,22 @@ static bool add_line(String &buffer, char *line, size_t line_length,
   case IS_CMD_LINE: is_cmd = true; break;
   }
 
-  if (mysql.oracle_mode) {
+  if (last_session_mode) {
+    // oracle mode slash cmd
     int slash_cnt = 0;
     for (pos = line; pos < end_of_line; pos++) {
-      if (my_isspace(charset_info, *pos) || *pos =='/') {
+      if (my_isspace(charset_info, *pos) || *pos == '/') {
         if (*pos == '/')
           slash_cnt++;
       } else {
         break;
       }
     }
-
     //no delimiter, oracle mode / must execute
     if (!is_user_specify_delimiter || is_prefix("/", delimiter)) {
       if (is_slash && !buffer.is_empty()) {
-        if ((com = find_command(buffer.c_ptr()))) {
-          if ((*com->func)(&buffer, buffer.c_ptr()) > 0)
-            DBUG_RETURN(1);                       // Quit 
-        } else {
-          if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
-            DBUG_RETURN(1);
-        }
+        if (execute_cmd(buffer))
+          return 1;
         buffer.length(0);
         *in_string = 0;
         *ml_comment = 0;
@@ -2770,14 +2811,8 @@ static bool add_line(String &buffer, char *line, size_t line_length,
         return 0;
       } else if (buffer.is_empty() && (is_slash || slash_cnt > 1)) {
         if (!last_execute_buffer.is_empty()) {
-          String tmpbuffer = last_execute_buffer;
-          if ((com = find_command(tmpbuffer.c_ptr()))) {
-            if ((*com->func)(&buffer, tmpbuffer.c_ptr()) > 0)
-              DBUG_RETURN(1);                       // Quit 
-          } else {
-            if (com_go(&tmpbuffer, 0) > 0)             // < 0 is not fatal
-              DBUG_RETURN(1);
-          }
+          if (execute_cmd(last_execute_buffer))
+            return 1;
           *in_string = 0;
           *ml_comment = 0;
           *is_pl_escape_sql = 0;
@@ -2851,6 +2886,12 @@ static bool add_line(String &buffer, char *line, size_t line_length,
         
         if ((*com->func)(&buffer,pos-1) > 0)
           DBUG_RETURN(1);                       // Quit
+
+        //deom: /* abc */ \s
+        if (NULL == get_trim_comment_sql(buffer.c_ptr(), buffer.length())) {
+          buffer.length(0);
+        }
+
         if (com->takes_params)
         {
           if (ss_comment)
@@ -2890,6 +2931,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
     else if (!*ml_comment && ((*in_string && mysql.oracle_mode && pos + 1 == end_of_line) || !*in_string) && 
       ((!*is_pl_escape_sql && is_prefix(pos, delimiter)) || (*is_pl_escape_sql && *pos == '/' && is_slash) ))
     {
+      char *str = NULL;
       /*
        * ��������������Զ��ָ��ת��:
        * 1. ��� delimiter �������� /
@@ -2907,7 +2949,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
           out = line;
         }
 
-        if (0 == (regexec(&pl_escape_sql_re, buffer.c_ptr_safe(), 0, 0, 0))) {
+        if (is_oracle_pl_escape_sql(glob_buffer.c_ptr(), glob_buffer.length())) {
           *is_pl_escape_sql = 1;
           //ԭ���ķָ���ҲҪ�Ž�ȥ
           buffer.append(pos, delimiter_length);
@@ -2945,8 +2987,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
 
       if ((com= find_command(buffer.c_ptr())))
       {
-          
-        if ((*com->func)(&buffer, buffer.c_ptr()) > 0)
+        if ((*com->func)(&buffer, com->cmdstr) > 0)
           DBUG_RETURN(1);                       // Quit 
       }
       else
@@ -2984,9 +3025,20 @@ static bool add_line(String &buffer, char *line, size_t line_length,
         out= line;
       }
 
+      // mysql demo:conn root@mysql#wbwbf-dfd:0;
+      char* str = get_trim_comment_sql(buffer.c_ptr(), buffer.length());
+      if (inchar == '#' && !mysql.oracle_mode && str &&
+        ((strncasecmp(str, "conn", 4) == 0 && buffer.length() > 4) ||
+        (strncasecmp(str, "connect", 7) == 0 && buffer.length() > 7)) ) {
+        buffer.append(pos);
+        connect_mysql_tenant(&buffer);
+        break;
+      }
+
       // comment to end of line
       if (preserve_comments)
       {
+        bool started_with_nothing = !buffer.length();
         buffer.append(pos);
 
         /*
@@ -2994,14 +3046,13 @@ static bool add_line(String &buffer, char *line, size_t line_length,
           client commands (delimiter, status, etc) will be interpreted on
           the next line.
         */
-        if (is_global_comment(&buffer))
+        if (started_with_nothing)
         {
           if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
             DBUG_RETURN(1);
           buffer.length(0);
         }
       }
-
       break;
     }
     else if (!*in_string && inchar == '/' && *(pos+1) == '*' &&
@@ -3037,13 +3088,6 @@ static bool add_line(String &buffer, char *line, size_t line_length,
         out= line;
       }
 
-      if (preserve_comments) {
-        if (is_global_comment(&buffer)) {
-          if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
-            DBUG_RETURN(1);
-          buffer.length(0);
-        }
-      }
       // Consumed a 2 chars or more, and will add 1 at most,
       // so using the 'line' buffer to edit data in place is ok.
       need_space= 1;
@@ -3075,6 +3119,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
   if (out != line || !buffer.is_empty())
   {
     uint length=(uint) (out-line);
+    my_bool add_n = 0;
 
     if (!truncated && (!is_delimiter_command(line, length) ||
                        (*in_string || *ml_comment)))
@@ -3090,14 +3135,25 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       */
       *out++='\n';
       length++;
+      add_n = 1;
     }
     if (buffer.length() + length >= buffer.alloced_length())
       buffer.realloc(buffer.length()+length+IO_SIZE);
     if ((!*ml_comment || preserve_comments) && buffer.append(line, length))
       DBUG_RETURN(1);
-  }
-  if (is_space_buffer(buffer.c_ptr(), buffer.c_ptr()+buffer.length())) {
-    buffer.length(0);
+    if (!buffer.is_empty()) {
+      String tmpbuf;
+      tmpbuf.append(buffer);
+      if (add_n) {
+        char *p = tmpbuf.c_ptr();
+        p[tmpbuf.length()-1] = 0;
+      }
+      if (NULL!=(com = find_command(tmpbuf.c_ptr()))) {
+        if ((*com->func)(&tmpbuf, com->cmdstr) > 0)
+          DBUG_RETURN(1);
+        buffer.length(0);
+      }
+    }
   }
   DBUG_RETURN(0);
 }
@@ -3788,51 +3844,37 @@ com_go(String *buffer,char *line __attribute__((unused)))
     if (status.batch)				// Ignore empty queries.
       return 0;
     return put_info("No query specified\n",INFO_ERROR);
-
-  }
-  if (!connected && reconnect())
-  {
-    buffer->length(0);				// Remove query on error
-    return opt_reconnect ? -1 : 1;          // Fatal error
   }
 
-  if (mysql.oracle_mode){
+  if (last_session_mode){
+    //oracle mode define '&' replace
+    if (is_define_oracle) {
+      scan_define_oracle(buffer, 1);
+    }
+
+    if (CMD_STATE_UNKNOW != set_cmd_oracle(buffer->c_ptr(), strlen(buffer->c_ptr())) || 
+      CMD_STATE_UNKNOW != set_param_oracle(buffer->c_ptr(), strlen(buffer->c_ptr()))) {
+      buffer->length(0);
+      return 0;
+    }
+
     //oracle mode source supprt echo
     if (verbose || (is_echo_oracle && in_com_source)) {
       if (is_termout_oracle_enable(&mysql))
         (void)com_print(buffer, 0);
     }
+
+    //handle pl_show_errors_sql_re, pl_create_sql_re
+    handle_oracle_sql(&mysql, buffer);
   } else {
     if (verbose)
       (void)com_print(buffer, 0);
   }
 
-  if (mysql.oracle_mode) {
-    String newbuffer;
-    /*set cmd oracle return 1 support set cmd ok, 0 unknown cmd*/
-    if (set_cmd_oracle(buffer->c_ptr_safe()))
-      return 0;
-    if (set_param_oracle(buffer->c_ptr_safe()))
-      return 0;
-
-    //oracle mode define '&' replace
-    if (is_define_oracle){
-      newbuffer.length(0);
-      if (scan_define_oracle(buffer, &newbuffer)){
-        buffer->length(0);
-        buffer->append(newbuffer);
-      }
-    }
-
-    //execute ...
-    newbuffer.length(0);
-    if (exec_cmd_oracle(buffer, &newbuffer)) {
-      buffer->length(0);
-      buffer->append(newbuffer);
-    }
-
-    //handle pl_show_errors_sql_re, pl_create_sql_re
-    handle_oracle_sql(&mysql, buffer);
+  if (!connected && reconnect())
+  {
+    buffer->length(0);				// Remove query on error
+    return opt_reconnect ? -1 : 1;          // Fatal error
   }
 
   if (skip_updates &&
@@ -5527,13 +5569,40 @@ com_print(String *buffer,char *line __attribute__((unused)))
   return 0;					/* If empty buffer */
 }
 
+static std::string get_password() {
+  std::string password;
+  char ch;
+
+#ifndef _WIN32
+  while ((ch = sh_getch()) != '\r') {
+#else
+  while ((ch = getch()) != '\r') {
+#endif
+    if (ch == '\b') {
+      if (!password.empty()) {
+        password.pop_back();
+      }
+    } else {
+      password += ch;
+    }
+  }
+  tee_fprintf(stdout, "\n");
+  return password;
+}
+
 	/* ARGSUSED */
 static int
 com_connect(String *buffer, char *line)
 {
-  char *tmp, buff[256];
+  char *tmp, buff[256] = {0};
   my_bool save_rehash= opt_rehash;
   int error;
+  int rewrite = 0;
+  char *newuser = NULL, *newtenant = NULL, *oldtenant = NULL;
+  std::string passwd;
+  std::string saveuser = current_user;
+  std::string savehost = current_host_success;
+  int saveport = current_port_success;
 
   //To relink, need to reinitialize this global variable
   dbms_serveroutput = 0;
@@ -5543,6 +5612,10 @@ com_connect(String *buffer, char *line)
     dbms_stmt = NULL;
   }
 
+  if (current_user) {
+    split_fullname(current_user, NULL, &oldtenant);
+  }
+
   bzero(buff, sizeof(buff));
   if (buffer)
   {
@@ -5550,36 +5623,63 @@ com_connect(String *buffer, char *line)
       Two null bytes are needed in the end of buff to allow
       get_arg to find end of string the second time it's called.
     */
-    tmp= strmake(buff, line, sizeof(buff)-2);
+    String tmpbuf;
+    tmpbuf.append(line);
+    if (last_session_mode && is_define_oracle) {
+      scan_define_oracle(&tmpbuf, 0);
+    }
+
+    tmp= strmake(buff, tmpbuf.c_ptr(), sizeof(buff)-2);
 #ifdef EXTRA_DEBUG
     tmp[1]= 0;
 #endif
-    if (rewrite_by_oracle(buff)) {
-      int i = 1;
+
+    rewrite = rewrite_by_oracle(buff);
+    if (-1 == rewrite) {
+      // invalid connect string...
+      tee_fprintf(stdout, "Connect string is invalid...\n");
+      if (oldtenant)
+        my_free(oldtenant);
+      oldtenant = NULL;
+      return 0;
+    } else if (1 == rewrite) {
       // connect username@tenant[/password[@[//]host[:port]]]
-      tmp = get_arg(buff, GET);
+      // connect username[/password[@[//]host[:port]]]
+      int i = 1;
+      tmp = get_arg_string(buff, GET);
       if (tmp && *tmp) {
         my_free(current_user);
         current_user = my_strdup(tmp, MYF(MY_WME));
         tmp = get_arg_by_index(buff, i++);
-        if (tmp) {
+        if (tmp && *tmp) {
+          int ilen = strlen(tmp);
+          char szbuf[128] = { 0 };
+          memset(szbuf, 0, sizeof(szbuf));
+          if (*tmp == '\"' && *(tmp + ilen-1) == '\"' && ilen > 2) {
+            memcpy(szbuf, tmp + 1, ilen - 2);
+          } else {
+            memcpy(szbuf, tmp, ilen);
+          }
           my_free(opt_password);
-          opt_password = my_strdup(tmp, MYF(MY_WME));
+          opt_password = my_strdup(szbuf, MYF(MY_WME));
           tmp = get_arg_by_index(buff, i++);
-          if (tmp) {
+          if (tmp && *tmp) {
             my_free(current_host);
             current_host = my_strdup(tmp, MYF(MY_WME));
             my_free(current_host_success);
             current_host_success = my_strdup(tmp, MYF(MY_WME));
 
             tmp = get_arg_by_index(buff, i++);
-            if (tmp) {
+            if (tmp && *tmp) {
               errno = 0;
               char *endchar;
               ulonglong port;
               port = strtoull(tmp, &endchar, 10);
               if (errno == ERANGE) {
                 my_getopt_error_reporter(ERROR_LEVEL, "Incorrect unsigned integer value: '%s'", tmp);
+                if (oldtenant)
+                  my_free(oldtenant);
+                oldtenant = NULL;
                 return 1;
               } else {
                 opt_mysql_port = (uint)port;
@@ -5587,6 +5687,17 @@ com_connect(String *buffer, char *line)
               }
             }
           }
+        } else {
+          tee_fprintf(stdout, "Enter password:");
+          passwd = get_password();
+          my_free(opt_password);
+          opt_password = my_strdup(passwd.c_str(), MYF(MY_WME));
+        }
+        split_fullname(current_user, &newuser, &newtenant);
+        if (newuser && !newtenant && oldtenant) {
+          snprintf(buff, sizeof(buff), "%s%s", newuser, oldtenant);
+          my_free(current_user);
+          current_user = my_strdup(buff, MYF(MY_WME));
         }
       } else {
         /* Quick re-connect */
@@ -5594,38 +5705,82 @@ com_connect(String *buffer, char *line)
       }
     } else {
       // connect db host
-      tmp= get_arg(buff, GET);
-      if (tmp && *tmp)
-      {
-        my_free(current_db);
-        current_db= my_strdup(tmp, MYF(MY_WME));
-        tmp= get_arg(buff, GET_NEXT);
-        if (tmp)
-        {
-          my_free(current_host);
-          current_host=my_strdup(tmp,MYF(MY_WME));
-          my_free(current_host_success);
-          current_host_success = my_strdup(tmp, MYF(MY_WME));
+      if (last_session_mode) {
+        //oracle mode
+        tmp = get_arg_string(buff, GET);
+        if (tmp && *tmp) {
+          my_free(current_user);
+          current_user = my_strdup(tmp, MYF(MY_WME));
+          split_fullname(current_user, &newuser, &newtenant);
+          if (newuser && !newtenant && oldtenant) {
+            snprintf(buff, sizeof(buff), "%s%s", newuser, oldtenant);
+            my_free(current_user);
+            current_user = my_strdup(buff, MYF(MY_WME));
+          }
+          
+          tee_fprintf(stdout, "Enter password:");
+          passwd = get_password();
+          my_free(opt_password);
+          opt_password = my_strdup(passwd.c_str(), MYF(MY_WME));
+        } else {
+          opt_rehash = 0;                            /* purecov: tested */
         }
       } else {
-        /* Quick re-connect */
-        opt_rehash= 0;                            /* purecov: tested */
+        tmp = get_arg_string(buff, GET);
+        if (tmp && *tmp) {
+          my_free(current_db);
+          current_db = my_strdup(tmp, MYF(MY_WME));
+          tmp = get_arg_string(buff, GET_NEXT);
+          if (tmp && *tmp) {
+            my_free(current_host);
+            current_host = my_strdup(tmp, MYF(MY_WME));
+            my_free(current_host_success);
+            current_host_success = my_strdup(tmp, MYF(MY_WME));
+          }
+        } else {
+          /* Quick re-connect */
+          opt_rehash = 0;                            /* purecov: tested */
+        }
       }
     }
     buffer->length(0);				// command used
     opt_mysql_port = current_port_success;
-    error = sql_connect(current_host_success, current_db, current_user, opt_password, 100);
+    error = sql_connect(current_host_success, NULL, current_user, opt_password, 100);
+    if (connected && !mysql.oracle_mode) {
+      sprintf(buff, "use %s", current_db);
+      if (mysql_query(&mysql, buff)) {
+        put_error(&mysql);
+      }
+    }
+    if (!connected) {
+      my_free(current_user);
+      my_free(current_host_success);
+      current_user = my_strdup(saveuser.c_str(), MYF(MY_WME));
+      current_host_success = my_strdup(savehost.c_str(), MYF(MY_WME));
+      current_port_success = opt_mysql_port = saveport;
+    }
   } else {
     opt_rehash= 0;
     error = sql_connect(current_host, current_db, current_user, opt_password, 0);
   }
-  opt_rehash= save_rehash;
 
+  if (oldtenant)
+    my_free(oldtenant);
+  if (newuser)
+    my_free(newuser);
+  if (newtenant)
+    my_free(newtenant);
+  oldtenant = NULL;
+  newuser = NULL;
+  newtenant = NULL;
+
+  opt_rehash= save_rehash;
   if (connected)
   {
-    if (mysql.oracle_mode) {
-      get_current_db();
-    }
+    full_username = 0;
+    part_username = 0;
+
+    get_current_db();
 
     sprintf(buff,"Connection id:    %lu",mysql_thread_id(&mysql));
     put_info(buff,INFO_INFO);
@@ -5837,8 +5992,8 @@ com_nowarnings(String *buffer __attribute__((unused)),
 
 int rewrite_by_oracle(char *line)
 {
-  char *ptr;
-  ptr = line;
+  char *ptr = line;
+  char in_string = 0;
 
   /* skip leading white spaces */
   while (my_isspace(charset_info, *ptr)) {
@@ -5854,7 +6009,17 @@ int rewrite_by_oracle(char *line)
   }
 
   // username@tenant[/password[@[//]host[:port]]]
-  while (*ptr && *ptr != '@') {
+  // username[/password[@[//]host[:port]]]
+  // parse username
+  in_string = 0;
+  while (*ptr) {
+    if (in_string == 0 && *ptr == '\"') {
+      in_string = *ptr;
+    } else if (in_string != 0 && *ptr == '\"') {
+      in_string = 0;
+    } else if (in_string == 0 && (*ptr == '/' || *ptr == '@') && *(ptr+1)) {
+      break;
+    }
     ptr++;
   }
 
@@ -5866,9 +6031,21 @@ int rewrite_by_oracle(char *line)
     if (*ptr) {
       *ptr++ = ' ';
 
-      while (*ptr && *ptr != '@') {
+      // parse password
+      in_string = 0;
+      while (*ptr) {
+        if (in_string == 0 && *ptr == '\"') {
+          in_string = *ptr;
+        } else if (in_string != 0 && *ptr == '\"') {
+          in_string = 0;
+        } else if (in_string == 0 && (*ptr == '@')) {
+          break;
+        }
         ptr++;
       }
+      //while (*ptr && *ptr != '@') {
+      //  ptr++;
+      //}
 
       if (*ptr) {
         *ptr++ = ' ';
@@ -5878,25 +6055,83 @@ int rewrite_by_oracle(char *line)
           *ptr++ = ' ';
         }
 
+        if (*ptr && *ptr == '[') {
+          //ipv6
+          *ptr++ = ' ';
+          while (*ptr) {
+            if (*ptr == ']') {
+              *ptr++ = ' ';
+              break;
+            } else {
+              ptr++;
+            }
+          }
+        }
+
         while (*ptr && *ptr != ':') {
           ptr++;
         }
 
         if (*ptr) {
           *ptr = ' ';
+          ptr++;
+        }
+
+        while (*ptr) {
+          if (*ptr < '0' || *ptr > '9') {
+            *ptr = ' ';
+            return -1;  //invalid connect str
+          }
+          ptr++;
         }
       }
     }
-    return true;
+    return 1; //username@tenant[/password[@[//]host[:port]]]
   } else {
-    return false;
+    return 0; //connect db host
   }
 }
-
-char *get_arg_by_index(char *line, int arg_index) {
-  char *ptr;
+static char *get_arg_string(char *line, get_arg_mode mode)
+{
+  char *ptr, *start;
+  bool short_cmd = false;
 
   ptr = line;
+  if (mode == GET_NEXT)
+  {
+    for (; *ptr; ptr++);
+    if (*(ptr + 1))
+      ptr++;
+  }
+  else
+  {
+    /* skip leading white spaces */
+    while (my_isspace(charset_info, *ptr))
+      ptr++;
+    if ((short_cmd = *ptr == '\\')) // short command was used
+      ptr += 2;
+    else
+      while (*ptr && !my_isspace(charset_info, *ptr)) // skip command
+        ptr++;
+  }
+  if (!*ptr)
+    return NullS;
+
+  while (my_isspace(charset_info, *ptr))
+    ptr++;
+  
+  for (start = ptr; *ptr; ptr++)
+  {
+    if (*ptr == ' ')
+    {
+      *ptr = 0;
+      break;
+    }
+  }
+  return start;
+}
+char *get_arg_by_index(char *line, int arg_index) {
+  char *ptr = line;
   while (arg_index > 0)
   {
     while (*ptr && !my_isspace(charset_info, *ptr)) { // skip arg
@@ -5909,12 +6144,37 @@ char *get_arg_by_index(char *line, int arg_index) {
 
     if (*ptr || *(++ptr)) {
       arg_index--;
-    }
-    else {
+    } else {
       break;
     }
   }
-  return get_arg(ptr, GET_NEXT);
+  return get_arg_string(ptr, GET_NEXT);
+}
+static void split_fullname(char *fulluser, char** username, char** tenant)
+{
+  char in_string = 0;
+  char *ptr = fulluser;
+  if (ptr) {
+    while (*ptr) {
+      if (in_string == 0 && *ptr == '\"') {
+        in_string = *ptr;
+      } else if (in_string != 0 && *ptr == '\"') {
+        in_string = 0;
+      } else if (in_string == 0 && *ptr == '@' && *(ptr + 1)) {
+        if (username) {
+          *username = my_strndup(fulluser, ptr - fulluser, MYF(MY_WME));
+        }
+        if (tenant) {
+          *tenant = my_strdup(ptr, MYF(MY_WME));
+        }
+        break;
+      }
+      ptr++;
+    }
+    if (username && *username == NULL) {
+      *username = my_strdup(fulluser, MYF(MY_WME));
+    }
+  }
 }
 
 /*
@@ -6042,7 +6302,6 @@ static void parse_socket5_proxy(char *socket5_proxy, char**host, int*port, char 
   char *p = socket5_proxy, *str = NULL;
   int idx = 0;
   my_bool in_string = 0;
-  my_bool split = 0;
 
   str = p;
   while (*p != 0) {
@@ -6080,7 +6339,7 @@ static void parse_socket5_proxy(char *socket5_proxy, char**host, int*port, char 
 }
 static void parse_multi_host(char *host, std::map<char*, int>* mhost)
 {
-  char *p = host, *str = NULL;
+  char *p = host;
   char *myhost = NULL, *myport = NULL;
   my_bool in_string = 0;
   if (NULL == host || NULL == mhost) {
@@ -6186,7 +6445,7 @@ static int sql_real_connect(char *host,char *database,char *user,char *password,
 
   charset_info= get_charset_by_name(mysql.charset->name, MYF(0));
 
-  
+  last_session_mode = mysql.oracle_mode;
   connected=1;
 #ifndef EMBEDDED_LIBRARY
   mysql_options(&mysql, MYSQL_OPT_RECONNECT, &debug_info_flag);
@@ -6306,6 +6565,7 @@ static int sql_real_connect_multi(const char* tns_name, ObClientLbAddressList *l
     }
   }
 
+  last_session_mode = mysql.oracle_mode;
   charset_info = get_charset_by_name(mysql.charset->name, MYF(0));
   connected = 1;
 #ifndef EMBEDDED_LIBRARY
@@ -7145,29 +7405,44 @@ static void report_progress_end()
 }
 #endif
 
-
-static my_bool is_global_comment(String *buffer)
+static char* get_trim_comment_sql(const char* str, int len)
 {
-  /*comment*/
-  my_bool ret = 1;
-  if (NULL == buffer || buffer->is_empty()) {
-    ret = 0;
-  } else {
-    //uint32 i = 0;
-    //uint32 len = buffer->length();
-    char *p = buffer->c_ptr();
-    
-    while (*p != 0 && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+  char * ret = NULL;
+  char * p = (char*)str;
+  char * end = p + len;
+  my_bool has_comment = 1;
+
+  while (*p && has_comment) {
+    has_comment = 0;
+    while (*p != 0 && p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
       p++;
     }
-
     if (*p == '/' && *(p + 1) == '*') {
-      ret = 1;
+      has_comment = 1;
+      p = p + 2; // ignore /*
+      while (*p != 0 && p < end && *p != '*' && *(p + 1) != '/')
+        p++;
+      if (*p == '*' && *(p + 1) == '/')
+        p = p + 2; // ignore */
     } else if (*p == '-' && *(p + 1) == '-') {
-      ret = 1;
-    } else {
-      ret = 0;
+      has_comment = 1;
+      p = p + 2;  // ignore --
+      while (*p != 0 && p < end && *p != '\n')
+        p++;
+      if (*p == '\n')
+        p++;  //ignore \n
     }
+  }
+  if (*p)
+    ret = p;
+  return ret;
+}
+static my_bool is_oracle_pl_escape_sql(const char *str, int len)
+{
+  my_bool ret = 0;
+  char *p = get_trim_comment_sql(str, len);
+  if (p && 0 == (regexec(&pl_escape_sql_re, p, 0, 0, 0))) {
+    ret = 1;
   }
   return ret;
 }
@@ -7217,17 +7492,6 @@ static int is_cmd_line(char *pos, size_t len){
   }
   return ret;
 }
-static my_bool is_space_buffer(char *start, char *end) {
-  my_bool ret = 1;
-  while (start < end) {
-    if (!my_isspace(charset_info, *start) && *start !='\r' && *start != '\n') {
-      ret = 0;
-      break;
-    }
-    start++;
-  }
-  return ret;
-}
 static my_bool is_termout_oracle_enable(MYSQL *mysql) {
   my_bool ret = 0;
   if (!mysql->oracle_mode ||
@@ -7237,64 +7501,68 @@ static my_bool is_termout_oracle_enable(MYSQL *mysql) {
   return ret;
 }
 
-static my_bool prompt_cmd_oracle(const char *str, char **text) {
-  my_bool rst = 0;
-  char *p = (char*)str;
-  char *start = NULL;
+static int run_oracle_command(String *buffer, const char *line) {
+  //2: fatal, exist
+  //1:runed cmd, clean glob_buffer
+  //0:unkonw cmd, continue execute
+  int ret = CMD_STATE_UNKNOW;
+  char *p = NULL, *e = NULL;
+  char *name = NULL;
   int len = 0;
- 
-  while (my_isspace(charset_info, *p))
-    p++;
- 
-  start = p;
+  String tmp;
+  tmp.append(*buffer);
+  tmp.append(line ? line : "", strlen(line ? line : ""));
+
+  e = tmp.c_ptr_safe() + tmp.length()-1;
+
+  p = get_trim_comment_sql(tmp.c_ptr_safe(), tmp.length());
+  if (NULL == p) {
+    return ret;
+  }
+
+  //trim the end ;
+  while (e > p && *e && my_isspace(charset_info, *e) || *e == ';') {
+    if (*e == ';') {
+      *e = 0;
+      break;
+    }
+    e--;
+  }
+
+  // check cmd name
+  name = p;
   while (*p != '\0' && !my_isspace(charset_info, *p))
     p++;
-  len = p - start;
-  if (strncasecmp("prompt", start, len ) != 0 || len<3){
-    return rst;
+  len = p - name;
+  JUMP_SPACE(p);
+
+  if (strncasecmp("prompt", name, len) == 0 && len >= 3) {
+    if (is_define_oracle) {
+      String str;
+      str.append(p);
+      scan_define_oracle(&str, 0);
+      tee_puts(str.c_ptr(), stdout);
+    } else {
+      tee_puts(p, stdout);
+    }
+    buffer->length(0);
+    ret = CMD_STATE_RUNED;
+  } else if (strncasecmp("define", name, len) == 0 && len >= 3) {
+    define_cmd_oracle(p);
+    buffer->length(0);
+    ret = CMD_STATE_RUNED;
+  } else if (strncasecmp("execute", name, len) == 0 && len >= 4) {
+    String newbuffer;
+    newbuffer.append("begin ");
+    newbuffer.append(p);
+    newbuffer.append("; end;");
+    ret = CMD_STATE_RUNED;
+    if (com_go(&newbuffer, 0) > 0) { // < 0 is not fatal
+      ret = CMD_STATE_ERROR;
+    }
+    buffer->length(0);
   }
- 
-  rst = 1;
-  while (my_isspace(charset_info, *p))
-    p++;
- 
-  *text = p;
-  return rst;
-}
-static my_bool exec_cmd_oracle(String *buffer, String *newbuffer) {
-  my_bool rst = 0;
-  char *p = (char*)buffer->c_ptr_safe();
-  char *exec_start = NULL, *exec_end = NULL;
-  char *start = NULL, *end = NULL;
-  int exec_len = 0, len = 0;
-  exec_end = exec_end;
-  end = end;
-
-  while (my_isspace(charset_info, *p))
-    p++;
-
-  exec_start = p;
-  while (*p != '\0' && !my_isspace(charset_info, *p))
-    p++;
-  exec_len = p - exec_start;
-
-  while (my_isspace(charset_info, *p))
-    p++;
-
-  start = p;
-  len = strlen(p);
-
-  if (exec_len < 4 || len <= 0) {
-    return rst;
-  }
-
-  if (strncasecmp("execute", exec_start, exec_len) == 0 && exec_len >= 4) {
-    rst = 1;
-    newbuffer->append("begin ");
-    newbuffer->append(start);
-    newbuffer->append("; end;");
-  }
-  return rst;
+  return ret;
 }
 
 static int is_on_off(const char* str, int len){
@@ -7314,7 +7582,7 @@ static int to_digit(const char* str, int len){
   }
   return atoi(str);
 }
-static my_bool set_cmd_oracle(const char *str){
+static int set_cmd_oracle(const char *str, int len2){
   //set define on/off/* ...
   //set feedback on/off/n
   //set echo on/off
@@ -7322,7 +7590,7 @@ static my_bool set_cmd_oracle(const char *str){
   //set serveroutput on/off
   //set heading on/off
 
-  my_bool rst = 0;
+  int rst = CMD_STATE_UNKNOW;
   char *p = (char*)str;
   char *name_start = NULL, *name_end = NULL;
   char *start = NULL, *end = NULL;
@@ -7330,25 +7598,26 @@ static my_bool set_cmd_oracle(const char *str){
   name_end = name_end;
   end = end;
 
-  while (my_isspace(charset_info, *p))
-    p++;
+  p = get_trim_comment_sql(str, len2);
+  if (!p)
+    return rst;
 
-  if (strncasecmp("set ", p, 4) == 0) {
+  JUMP_SPACE(p);
+
+  if (strncasecmp("set", p, 3) == 0 && my_isspace(charset_info, *(p+3))) {
     p = p + 4;
   } else {
     return rst;
   }
 
-  while (my_isspace(charset_info, *p))
-    p++;
+  JUMP_SPACE(p);
 
   name_start = p;
   while (*p != '\0' && !my_isspace(charset_info, *p))
     p++;
   name_len = p - name_start;
 
-  while (my_isspace(charset_info, *p))
-    p++;
+  JUMP_SPACE(p);
 
   start = p;
   len = strlen(p);
@@ -7357,8 +7626,8 @@ static my_bool set_cmd_oracle(const char *str){
     return rst;
   }
 
-  if (strncasecmp("define", name_start, name_len)==0 && name_len>=3){
-    rst = 1;
+  if (strncasecmp("define", name_start, name_len)==0 && name_len>=3) {
+    rst = CMD_STATE_RUNED;
     if (len == 1){
       if (my_isdigit(charset_info, *start) || my_isalpha(charset_info, *start) || *start==' '||*start ==' '){
         put_info("SP2-0272: define Characters cannot be alphanumeric or blank", INFO_INFO);
@@ -7374,8 +7643,8 @@ static my_bool set_cmd_oracle(const char *str){
     } else {
       put_info("SP2-0268: define value is invalid", INFO_INFO);
     }
-  } else if (strncasecmp("feedback", name_start, name_len)==0 && name_len>=4){
-    rst = 1;
+  } else if (strncasecmp("feedback", name_start, name_len)==0 && name_len>=4) {
+    rst = CMD_STATE_RUNED;
     feedback_int_oracle = to_digit(start, len);
     if (feedback_int_oracle>=0){
       if (feedback_int_oracle>50000){
@@ -7390,28 +7659,28 @@ static my_bool set_cmd_oracle(const char *str){
       put_info("SP2-0268: feedback value is invalid", INFO_INFO);
     }
   } else if (strncasecmp("echo", name_start, 4)== 0){
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) >= 0){
       is_echo_oracle = is_on_off(start, len);
     } else {
       put_info("SP2-0265: echo value is ON or OFF", INFO_INFO);
     }
   } else if (strncasecmp("sqlblanklines", name_start, name_len)==0 && name_len>=5){
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) >= 0){
       is_sqlblanklines_oracle = is_on_off(start, len);
     } else {
       put_info("SP2-0265: sqlblanklines value is ON or OFF", INFO_INFO);
     }
   } else if (strncasecmp("heading", name_start, name_len) == 0 && name_len >=3) {
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) >= 0) {
       column_names = is_on_off(start, len);
     } else {
       put_info("SP2-0265: heading value is ON or OFF", INFO_INFO);
     }
   } else if (strncasecmp("termout", name_start, name_len) ==0 && name_len >=4) {
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) >= 0) {
       is_termout_oracle = is_on_off(start, len);
     } else {
@@ -7419,25 +7688,25 @@ static my_bool set_cmd_oracle(const char *str){
     }
   } else if (strncasecmp("pagesize", name_start, name_len) == 0 && name_len >=5) {
     //The setting is OK, but it doesn’t actually take effect.
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     pagesize_int_oracle = to_digit(start, len);
   } else if (strncasecmp("trimspool", name_start, name_len) == 0 && name_len >= 4) {
     //The setting is OK, but it doesn’t actually take effect.
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) >= 0) {
       is_trimspool_oracle = is_on_off(start, len);
     } else {
       put_info("SP2-0265: trimspool value is ON or OFF", INFO_INFO);
     }
   } else if (strncasecmp("exitcommit", name_start, name_len) == 0 && name_len >=5) {
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) >= 0) {
       is_exitcommit_oracle = is_on_off(start, len);
     } else {
       put_info("SP2-0265: exitcommit value is ON or OFF", INFO_INFO);
     }
   } else if (strncasecmp("numwidth", name_start, name_len) == 0 && name_len >= 3) {
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     int numwidth = to_digit(start, len);
     if (numwidth == -1) {
       put_info("SP2-0268: numwidth option not a valid number\n", INFO_INFO);
@@ -7451,7 +7720,7 @@ static my_bool set_cmd_oracle(const char *str){
   } else if (strncasecmp("numformat", name_start, name_len) == 0 && name_len >= 4) {
     put_info("SP2: set num format not supported\n", INFO_INFO);
   } else if (strncasecmp("serveroutput", name_start, 12) == 0) {
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     if (is_on_off(start, len) == 1){
       uint error = mysql_real_query_for_lazy(dbms_enable_buffer.ptr(), dbms_enable_buffer.length());
       if (!error) {
@@ -7472,17 +7741,18 @@ static my_bool set_cmd_oracle(const char *str){
   }
   return rst;
 }
-static my_bool set_param_oracle(const char *str) {
+static int set_param_oracle(const char *str, int len) {
   //COLUMN c1 FORMAT format
-  my_bool rst = 0;
+  int rst = CMD_STATE_UNKNOW;
   regmatch_t subs[NS];
 
   if (0 == regexec(&column_format_re, str, (size_t)NS, subs, 0)) {
-    rst = 1;
+    rst = CMD_STATE_RUNED;
     put_info("SP2: column xxx format not supported\n", INFO_INFO);
   }
   return rst;
 }
+
 static void get_end_str(char define, String *endstr1, String *endstr2, String *endstr3){
   char *p = (char*)"~!@#$%^&*()+`=-{}|[]:\";'<>?,./\t\r\n\\ ";
   endstr1->length(0);
@@ -7496,17 +7766,15 @@ static void get_end_str(char define, String *endstr1, String *endstr2, String *e
         endstr3->append_char(*p);
       }
     }
-    
     p++;
   }
 }
 static void get_input_str(String *varkey, String *varval, int defcount){
-#define MAX_FGETS 4096
-  char buf[MAX_FGETS] = { 0 };
+  char buf[MAX_DEFINE_SIZE] = { 0 };
   std::map<void*, void*>::iterator iter;
   //find from map_global
   varval->length(0);
-  for(iter = map_global.begin(); iter != map_global.end(); iter++){
+  for(iter = global_define_map.begin(); iter != global_define_map.end(); iter++){
     if (strlen((char*)(iter->first)) == varkey->length() && 0 == strncasecmp((char*)iter->first, varkey->c_ptr_safe(), varkey->length())) {
       varval->append((char*)iter->second, strlen((char*)iter->second));
       return;
@@ -7514,7 +7782,7 @@ static void get_input_str(String *varkey, String *varval, int defcount){
   }
 
   tee_fprintf(stdout, "Please input %s val:  ", varkey->c_ptr_safe());
-  fgets(buf, MAX_FGETS, stdin);
+  fgets(buf, MAX_DEFINE_SIZE, stdin);
   if (buf[strlen(buf)-1] == '\n'){
     buf[strlen(buf) - 1] = '\0';
   }
@@ -7527,26 +7795,69 @@ static void get_input_str(String *varkey, String *varval, int defcount){
     if (key != NULL && val != NULL){
       strcpy((char*)key, varkey->c_ptr_safe());
       strcpy((char*)val, varval->c_ptr_safe());
-      map_global[key] = val;
+      global_define_map[key] = val;
     } else {
       my_free(key); my_free(val);
     }
   }
 }
-static void free_map_global(){
+static void set_key_value(const char *strkey, const char *strval) {
   std::map<void*, void*>::iterator iter;
-  for (iter = map_global.begin(); iter != map_global.end(); iter++) {
+  if (strkey && strval) {
+    int vallen = strlen(strval);
+    int keylen = strlen(strkey);
+    if (keylen > 0 && vallen > 0) {
+      //find key
+      for (iter = global_define_map.begin(); iter != global_define_map.end(); iter++) {
+        if (strlen((char*)(iter->first)) == keylen && 0 == strncasecmp((char*)iter->first, strkey, keylen)) {
+          void *val = my_malloc(vallen + 1, MYF(MY_WME));
+          if (val) {
+            strcpy((char*)val, strval);
+            my_free(iter->second);
+            iter->second = val;
+          }
+          return;
+        }
+      }
+
+      // not exist global_define_map
+      {
+        void *key = my_malloc(keylen + 1, MYF(MY_WME));
+        void *val = my_malloc(vallen + 1, MYF(MY_WME));
+        if (key != NULL && val != NULL) {
+          strcpy((char*)key, strkey);
+          strcpy((char*)val, strval);
+          global_define_map[key] = val;
+        } else {
+          my_free(key); my_free(val);
+        }
+      }
+    }
+  }
+}
+static void display_key_value() {
+  char buf[MAX_DEFINE_SIZE] = { 0 };
+  std::map<void*, void*>::iterator iter;
+  for (iter = global_define_map.begin(); iter != global_define_map.end(); iter++) {
+    snprintf(buf, MAX_DEFINE_SIZE, "DEFINE %s     = %s", (char*)(iter->first), (char*)(iter->second));
+    put_info(buf, INFO_INFO);
+  }
+}
+static void free_global_define_map(){
+  std::map<void*, void*>::iterator iter;
+  for (iter = global_define_map.begin(); iter != global_define_map.end(); iter++) {
     my_free(iter->first);
     my_free(iter->second);
   }
-  map_global.clear();
+  global_define_map.clear();
 }
-static my_bool scan_define_oracle(String *buffer, String *newbuffer){
+static my_bool scan_define_oracle(String *buffer, int display){
   int line_idx = 1, def_count = 0;
   char *p = buffer->c_ptr_safe();
   my_bool is_scan = 0;
   my_bool in_string = 0;
   String endstr1, endstr2, endstr3, old_line, new_line, var_key, var_value;
+  String newbuffer;
   get_end_str(define_char_oracle, &endstr1, &endstr2, &endstr3);
   
   //check define char to end
@@ -7566,7 +7877,7 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
             def_count = 0;
             old_line.append(ptmp, p - ptmp);
             new_line.append(ptmp, p - ptmp);
-            newbuffer->append(ptmp, p - ptmp);
+            newbuffer.append(ptmp, p - ptmp);
             ptmp = p;
           }
           have_space = 0;
@@ -7584,7 +7895,7 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
           if (*p == '\0' || have_note) {
             old_line.append(ptmp, p - ptmp);
             new_line.append(ptmp, p - ptmp);
-            newbuffer->append(ptmp, p - ptmp);
+            newbuffer.append(ptmp, p - ptmp);
             ptmp = p;
             def_count = 0;
             have_space = 0;
@@ -7595,7 +7906,7 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
           have_space = 0;
           old_line.append(ptmp, p - ptmp);
           new_line.append(ptmp, p - ptmp);
-          newbuffer->append(ptmp, p - ptmp);
+          newbuffer.append(ptmp, p - ptmp);
           ptmp = p;
         }
         p++;
@@ -7605,18 +7916,18 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
       if (def_count >= 3) {
         if (def_count % 2 == 1) {
           new_line.append(ptmp, def_count - 1);
-          newbuffer->append(ptmp, def_count - 1);
+          newbuffer.append(ptmp, def_count - 1);
           def_count = 1;
         } else {
           new_line.append(ptmp, def_count - 2);
-          newbuffer->append(ptmp, def_count - 2);
+          newbuffer.append(ptmp, def_count - 2);
           def_count = 2;
         }
       } else if (def_count == 1 || def_count == 2) {
         ;
       } else if (def_count == 0) {
         new_line.append(ptmp, p - ptmp);
-        newbuffer->append(ptmp, p - ptmp);
+        newbuffer.append(ptmp, p - ptmp);
       }
 
       start = p;
@@ -7631,7 +7942,7 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
         var_key.length(0);
         var_key.append(start, p - start);
         get_input_str(&var_key, &var_value, def_count);
-        newbuffer->append(var_value);
+        newbuffer.append(var_value);
         new_line.append(var_value);
         is_scan = 1;
         def_count = 0;
@@ -7647,7 +7958,7 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
       continue;
 
     if (*p != '\0'){
-      newbuffer->append_char(*p);
+      newbuffer.append_char(*p);
       if (*p != '\n') {
         new_line.append_char(*p);
         old_line.append_char(*p);
@@ -7657,8 +7968,10 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
     if (*p == '\n' || *p == '\0' || *(p + 1) == '\0') {
       if (is_scan) {
         is_scan = 0;
-        tee_fprintf(stdout, "Old Val  %d:   %s\n", line_idx, old_line.c_ptr_safe());
-        tee_fprintf(stdout, "New Val  %d:   %s\n", line_idx, new_line.c_ptr_safe());
+        if (display) {
+          tee_fprintf(stdout, "Old Val  %d:   %s\n", line_idx, old_line.c_ptr_safe());
+          tee_fprintf(stdout, "New Val  %d:   %s\n", line_idx, new_line.c_ptr_safe());
+        }
       }
       old_line.length(0);
       new_line.length(0);
@@ -7668,8 +7981,96 @@ static my_bool scan_define_oracle(String *buffer, String *newbuffer){
     if (*p != '\0')
       p++;
   }
+
+  buffer->length(0);
+  buffer->append(newbuffer);
   return 1;
 }
+
+static int valid_define_name(char c) {
+  int ret = 0;
+  if (c == '_' || (c >= '0' && c <= '9') ||
+    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+    ret = 1;
+  }
+  return ret;
+}
+static int define_cmd_oracle(char *line)
+{
+  //define mypwd=test
+  char instring = 0;
+  char *p = line;
+  char *key = NULL;
+  char *val = NULL;
+  char last = 0;
+
+  // check cmd(define)
+  JUMP_SPACE(p);
+  if (strncasecmp(p, "define", 6) == 0)
+    p = p + 6;
+  JUMP_SPACE(p);
+
+  if (*p) {
+    //check key
+    key = p;
+    while (*p) {
+      if (!valid_define_name(*p)) {
+        last = *p;
+        *p = 0;
+        p++;
+        break;
+      }
+      p++;
+    }
+    if (strlen(key) == 0) {
+      put_info("SP2-0553: invalid define name", INFO_INFO);
+      return 0;
+    }
+    JUMP_SPACE(p);
+
+    // check =
+    if (*p != '=' && last != '=') {
+      put_info("SP2-0136: DEFINE xxx=xxx", INFO_INFO);
+      return 0;
+    }
+    if (*p == '=' && last != '=') {
+      p++;
+    }
+    JUMP_SPACE(p);
+
+    // check value
+    if (*p == '\'' || *p == '\"') {
+      instring = *p;
+      p++;
+    }
+    val = p;
+    while (*p) {
+      if (my_isspace(charset_info, *p) || *p == instring) {
+        if (*p == '\'' || *p == '\"')
+          instring = 0;
+        *p = 0;
+        break;
+      }
+      p++;
+    }
+    if (instring != 0) {
+      put_info("invalid string", INFO_INFO);
+      return 0;
+    }
+    if (strlen(val) == 0) {
+      put_info("SP2-0137: invalid define value", INFO_INFO);
+      return 0;
+    }
+
+    set_key_value(key, val);
+  } else {
+    //display define
+    display_key_value();
+  }
+
+  return 0;
+}
+
 
 static char* get_login_sql_path()
 {
@@ -7919,9 +8320,7 @@ static void print_error_sqlstr(String *buffer, char* topN)
   }
 
   //trim space line
-  while (*p != 0 && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
-    p++;
-  }
+  JUMP_SPACE_NR(p);
 
   while (*p != 0 && (top == 0 || i < top)) {
     topstr.append_char(*p);
@@ -7934,4 +8333,32 @@ static void print_error_sqlstr(String *buffer, char* topN)
   fprintf(stdout, "----------------------------\n");
   fprintf(stdout, "%s\n\n", topstr.ptr());
   fflush(stdout);
+}
+
+static void connect_mysql_tenant(String *buffer) {
+  char *s = NULL, *e = NULL;
+  char *str = get_trim_comment_sql(buffer->c_ptr(), buffer->length());
+  s = str;
+  e = buffer->c_ptr() + buffer->length() - 1;
+  while (*e && e > s && my_isspace(charset_info, *e))
+    e--;
+  if (is_prefix(e, delimiter)) {
+    *(e) = 0;
+  }
+  com_connect(buffer, str);
+  buffer->length(0);
+}
+
+static bool execute_cmd(String &buffer) {
+  COMMANDS *com = NULL;
+  String tmpbuf;
+  tmpbuf.append(buffer);
+  if (NULL != (com = find_command(tmpbuf.c_ptr()))) {
+    if ((*com->func)(&buffer, com->cmdstr) > 0)
+      return 1;                       // Quit 
+  } else {
+    if (com_go(&buffer, 0) > 0)             // < 0 is not fatal
+      return 1;
+  }
+  return 0;
 }

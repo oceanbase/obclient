@@ -662,7 +662,7 @@ void check_io(FILE *file)
 static void print_version(void)
 {
   printf("%s  Ver %s Distrib %s, for %s (%s), OceanBase Customized Edition\n",
-    my_progname_short,DUMP_VERSION,MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
+    my_progname_short,OBCLIENT_VERSION,MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
 } /* print_version */
 
 
