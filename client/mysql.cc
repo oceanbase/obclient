@@ -372,6 +372,9 @@ static char obclient_login[MAX_BUFFER_SIZE] = { 0 };
 static char* get_login_sql_path();
 static void start_login_sql(MYSQL *mysql, String *buffer, const char *path);
 
+extern char *login_info;
+static char* get_login_info();
+
 #define IS_CMD_SLASH 1    //oracle /
 #define IS_CMD_LINE 2     //\s,\h...
 static String last_execute_buffer;
@@ -1491,7 +1494,7 @@ int sh_getch(void) {
 
 int main(int argc,char *argv[])
 {
-  char buff[80];
+  char buff[256];
 
   MY_INIT(argv[0]);
   DBUG_ENTER("main");
@@ -1678,6 +1681,17 @@ int main(int argc,char *argv[])
   snprintf(buff, sizeof(buff), "%s",
 	  "Type 'help;' or '\\h' for help. Type '\\c' to clear the current input statement.\n");
   put_info(buff,INFO_INFO);
+  char *info = get_login_info();
+  
+  if (info != NULL)
+  {
+    snprintf(buff, sizeof(buff),
+            "*************************************************\n"
+            "  \033[0;31mWARNING:%s\033[0m                    \n"
+            "*************************************************\n",
+           info);
+   put_info(buff,INFO_INFO);
+  }
 
   init_dbms_output();
   init_pl_sql();
@@ -6345,6 +6359,9 @@ static void parse_multi_host(char *host, std::map<char*, int>* mhost)
   if (NULL == host || NULL == mhost) {
     return;
   }
+  if (NULL == strchr(host, ',')) {
+    return;
+  }
 
   myhost = p;
   while (*p != 0) {
@@ -8071,6 +8088,10 @@ static int define_cmd_oracle(char *line)
   return 0;
 }
 
+static char* get_login_info()
+{
+  return login_info;
+}
 
 static char* get_login_sql_path()
 {
