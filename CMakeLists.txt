@@ -14,7 +14,11 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1335 USA
 
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8.7)
+IF(APPLE)
+  CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
+ELSE()
+  CMAKE_MINIMUM_REQUIRED(VERSION 2.8.7)
+ENDIF()
 
 IF(POLICY CMP0022)
   CMAKE_POLICY(SET CMP0022 NEW)
@@ -27,6 +31,15 @@ IF(POLICY CMP0054)
 ENDIF()
 IF(POLICY CMP0075)
   CMAKE_POLICY(SET CMP0075 NEW)
+ENDIF()
+
+IF(NOT WIN32)
+  IF(APPLE)
+    # On macOS, pthread and dl are part of libSystem and linked automatically.
+    # No explicit LINK_LIBRARIES needed.
+  ELSE()
+    LINK_LIBRARIES(pthread dl)
+  ENDIF()
 ENDIF()
 
 MESSAGE(STATUS "Running cmake version ${CMAKE_VERSION}")
