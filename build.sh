@@ -12,6 +12,14 @@ clean
 TOP_DIR=$(cd "$(dirname "$0")";pwd)
 DEP_DIR=${TOP_DIR}/deps/3rd/usr/local/oceanbase/deps/devel
 
+# Download and extract third-party dependencies
+echo "=== Downloading dependencies ==="
+(cd "${TOP_DIR}/deps/3rd" && bash dep_create.sh)
+if [[ $? -ne 0 ]]; then
+  echo "Failed to download dependencies" 1>&2
+  exit 1
+fi
+
 # Common cmake options (shared between platforms)
 CMAKE_COMMON_OPTS=(
   -DCMAKE_INSTALL_PREFIX=/u01/obclient
