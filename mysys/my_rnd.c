@@ -58,9 +58,21 @@ void my_rnd_init(struct my_rnd_struct *rand_st, ulong seed1, ulong seed2)
 double my_rnd(struct my_rnd_struct *rand_st)
 {
   unsigned long seed1;
+  
+  if (rand_st->max_value == 0)
+  {
+    return 0.0;
+  }
+  
   seed1= (rand_st->seed1*3+rand_st->seed2) % rand_st->max_value;
   rand_st->seed2=(seed1+rand_st->seed2+33) % rand_st->max_value;
   rand_st->seed1= seed1;
+  
+  if (rand_st->max_value_dbl == 0.0)
+  {
+    return 0.0;
+  }
+  
   return (((double) seed1)/rand_st->max_value_dbl);
 }
 

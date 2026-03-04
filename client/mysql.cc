@@ -2160,12 +2160,12 @@ static void usage(int version)
 #else
   const char* readline= "readline";
 #endif
-  printf("%s  Ver %s Distrib %s, for %s (%s) using %s %s\n",
+  printf("%s  Ver %s Distrib %s, for %s (%s) using %s %s(Built %s %s)\n",
 	 my_progname, VER, MYSQL_SERVER_VERSION, SYSTEM_TYPE, MACHINE_TYPE,
-         readline, rl_library_version);
+         readline, rl_library_version, __DATE__, __TIME__);
 #else
-  printf("%s  Ver %s Distrib %s, for %s (%s), source revision %s\n", my_progname, VER,
-	MYSQL_SERVER_VERSION, SYSTEM_TYPE, MACHINE_TYPE,SOURCE_REVISION);
+  printf("%s  Ver %s Distrib %s, for %s (%s), source revision %s(Built %s %s)\n", my_progname, VER,
+	MYSQL_SERVER_VERSION, SYSTEM_TYPE, MACHINE_TYPE,SOURCE_REVISION, __DATE__, __TIME__);
 #endif
 
   if (version)
@@ -2569,20 +2569,6 @@ static int read_and_execute(bool interactive)
         glob_buffer.length(0);
         continue;
       }
-    }
-
-    //skip space line(buffer is empty)
-    {
-      char *pos = NULL, *end_of_line = line + strlen(line);
-      for (pos = line; pos < end_of_line; pos++) {
-        uchar inchar = (uchar)*pos;
-        if (my_isspace(charset_info, inchar) && glob_buffer.is_empty())
-          continue;
-        else
-          break;
-      }
-      if (pos >= end_of_line)
-        continue;
     }
 
     //support oracle mode command
@@ -7437,7 +7423,7 @@ static char* get_trim_comment_sql(const char* str, int len)
     if (*p == '/' && *(p + 1) == '*') {
       has_comment = 1;
       p = p + 2; // ignore /*
-      while (*p != 0 && p < end && *p != '*' && *(p + 1) != '/')
+      while (*p != 0 && p < end && !(*p == '*' && *(p + 1) == '/'))
         p++;
       if (*p == '*' && *(p + 1) == '/')
         p = p + 2; // ignore */

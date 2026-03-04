@@ -20,6 +20,9 @@
 #include <my_sys.h>
 #include <my_crypt.h>
 
+#define MAX_CIPHER_STORE_LEN 4U
+#define LOGIN_KEY_LEN 20U
+
 C_MODE_START
 
 #ifdef USE_SYSTEM_WRAPPERS

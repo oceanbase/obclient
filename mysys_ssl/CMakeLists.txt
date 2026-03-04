@@ -34,6 +34,8 @@ SET(MYSYS_SSL_HIDDEN_SOURCES
 SET(MYSYS_SSL_SOURCES
     ${MYSYS_SSL_HIDDEN_SOURCES}
     my_crypt.cc
+    my_aes.cc 
+    my_aes_openssl.cc
    )
 
 # In order to get correct symbol visibility, these files

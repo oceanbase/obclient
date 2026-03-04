@@ -110,6 +110,13 @@ void my_getopt_register_get_addr(my_getopt_value func_addr)
   getopt_get_addr= func_addr;
 }
 
+int handle_options(int *argc, char ***argv,
+  const struct my_option *longopts,
+  my_get_one_option get_one_option)
+{
+return ob_handle_options(argc, argv, longopts, get_one_option, NULL, FALSE);
+}
+
 union ull_dbl
 {
   ulonglong ull;
@@ -198,9 +205,10 @@ double getopt_ulonglong2double(ulonglong v)
   @return error in case of ambiguous or unknown options,
           0 on success.
 */
-int handle_options(int *argc, char ***argv, 
-		   const struct my_option *longopts,
-                   my_get_one_option get_one_option)
+int ob_handle_options(int *argc, char ***argv,  
+                      const struct my_option *longopts,
+                      my_get_one_option get_one_option,
+                      const char **command_list,my_bool ignore_unknown_option)
 {
   uint UNINIT_VAR(opt_found), argvpos= 0, length;
   my_bool end_of_options= 0, must_be_var, set_maximum_value,
@@ -371,10 +379,10 @@ int handle_options(int *argc, char ***argv,
                                            WARNING_LEVEL : ERROR_LEVEL,
                                          "%s: unknown option '--%s'", 
                                          my_progname, cur_arg);
-	      if (!option_is_loose)
+	      if (!option_is_loose || ignore_unknown_option)
 		DBUG_RETURN(EXIT_UNKNOWN_OPTION);
 	    }
-	    if (option_is_loose)
+	    if (option_is_loose || ignore_unknown_option)
 	    {
 	      (*argc)--;
 	      continue;
@@ -635,7 +643,27 @@ int handle_options(int *argc, char ***argv,
       (*argc)--; /* option handled (long), decrease argument count */
     }
     else /* non-option found */
-      (*argv)[argvpos++]= cur_arg;
+    {
+      if (command_list)
+      { 
+        while (* command_list)
+        {
+          if (!strcmp(*command_list, cur_arg))
+          {
+            /* Match found. */
+            (*argv)[argvpos ++]= cur_arg;
+
+            /* Copy rest of the un-parsed elements & return. */
+            while ((++ pos) != pos_end)
+              (*argv)[argvpos ++]= *pos;
+            (*argv)[argvpos]= 0;
+            DBUG_RETURN(0);
+          }
+          command_list ++;        
+        }
+      }
+      (*argv)[argvpos ++]= cur_arg;
+    }
   }
   /*
     Destroy the first, already handled option, so that programs that look
