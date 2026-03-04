@@ -661,8 +661,8 @@ void check_io(FILE *file)
 
 static void print_version(void)
 {
-  printf("%s  Ver %s Distrib %s, for %s (%s), OceanBase Customized Edition\n",
-    my_progname_short,OBCLIENT_VERSION,MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
+  printf("%s  Ver %s Distrib %s, for %s (%s), OceanBase Customized Edition(Built %s %s)\n",
+    my_progname_short,OBCLIENT_VERSION,MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE, __DATE__, __TIME__);
 } /* print_version */
 
 

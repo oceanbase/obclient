@@ -193,8 +193,8 @@ static const char *load_default_groups[]=
 
 static void print_version(void)
 {
-  printf("%s  Ver %s Distrib %s, for %s (%s)\n" ,my_progname,
-	  OBCLIENT_VERSION, MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE);
+  printf("%s  Ver %s Distrib %s, for %s (%s)(Built %s %s)\n" ,my_progname,
+	  OBCLIENT_VERSION, MYSQL_SERVER_VERSION,SYSTEM_TYPE,MACHINE_TYPE,__DATE__, __TIME__);
 }
 
 

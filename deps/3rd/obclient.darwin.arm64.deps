@@ -1,0 +1,9 @@
+[target]
+os=darwin
+arch=arm64
+repo=https://mirrors.aliyun.com/oceanbase/development-kit/darwin/15/arm64
+
+[deps]
+# openssl 1.1.1u static library for macOS arm64
+https://mirrors.aliyun.com/oceanbase/development-kit/darwin/15/arm64/devdeps-openssl-1.1.1u-20251204.tar.gz
+# ncurses: use system ncurses, no need to download

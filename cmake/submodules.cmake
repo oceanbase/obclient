@@ -19,16 +19,16 @@ IF(GIT_EXECUTABLE AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
     SET(update_result 0)
   ELSEIF (cmake_update_submodules MATCHES force)
     MESSAGE(STATUS "Updating submodules (forced)")
-    EXECUTE_PROCESS(COMMAND "${GIT_EXECUTABLE}" submodule update --init --force --recursive --depth=1
+    EXECUTE_PROCESS(COMMAND "${GIT_EXECUTABLE}" submodule update --init --force --remote --recursive --depth=1
                     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                     RESULT_VARIABLE update_result)
   ELSEIF (cmake_update_submodules MATCHES yes)
-    EXECUTE_PROCESS(COMMAND "${GIT_EXECUTABLE}" submodule update --init --recursive --depth=1
+    EXECUTE_PROCESS(COMMAND "${GIT_EXECUTABLE}" submodule update --init --remote --recursive --depth=1
                     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                     RESULT_VARIABLE update_result)
   ELSE()
     MESSAGE(STATUS "Updating submodules")
-    EXECUTE_PROCESS(COMMAND "${GIT_EXECUTABLE}" submodule update --init --recursive
+    EXECUTE_PROCESS(COMMAND "${GIT_EXECUTABLE}" submodule update --init --remote --recursive
                     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
                     RESULT_VARIABLE update_result)
   ENDIF()

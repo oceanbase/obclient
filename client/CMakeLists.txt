@@ -60,6 +60,9 @@ MYSQL_ADD_EXECUTABLE(mysqlimport mysqlimport.c)
 SET_SOURCE_FILES_PROPERTIES(mysqlimport.c PROPERTIES COMPILE_FLAGS "-DTHREADS")
 TARGET_LINK_LIBRARIES(mysqlimport ${CLIENT_LIB})
 
+MYSQL_ADD_EXECUTABLE(obclient_config_editor mysql_config_editor.cc)
+TARGET_LINK_LIBRARIES(obclient_config_editor ${CLIENT_LIB} mysys mysys_ssl)
+
 # MYSQL_ADD_EXECUTABLE(mysql_upgrade mysql_upgrade.c COMPONENT Server)
 # TARGET_LINK_LIBRARIES(mysql_upgrade ${CLIENT_LIB})
 # ADD_DEPENDENCIES(mysql_upgrade GenFixPrivs)

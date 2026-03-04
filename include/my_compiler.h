@@ -139,6 +139,19 @@ struct my_aligned_storage
 
 #endif /* __cplusplus */
 
+/*
+  Disable MY_ATTRIBUTE for Sun Studio and Visual Studio.
+  Note that Sun Studio supports some __attribute__ variants,
+  but not format or unused which we use quite a lot.
+*/
+#ifndef MY_ATTRIBUTE
+#if defined(__GNUC__)
+#  define MY_ATTRIBUTE(A) __attribute__(A)
+#else
+#  define MY_ATTRIBUTE(A)
+#endif
+#endif
+
 # ifndef MY_ALIGNED
 /*
   Make sure MY_ALIGNED can be used also on platforms where we don't

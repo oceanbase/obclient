@@ -18,7 +18,7 @@ as for embedding into mass-deployed software.
 %define MYSQL_GROUP root
 %define __os_install_post %{nil}
 %define base_dir /u01/mysql
-%define file_dir /app/mariadb
+%define file_dir /u01/obclient
 
 
 %prep
@@ -39,9 +39,15 @@ for dir in `ls $RPM_BUILD_ROOT%{file_dir} | grep -v "bin"`
 do
         rm -rf $RPM_BUILD_ROOT%{file_dir}/${dir}
 done
-mkdir -p $RPM_BUILD_ROOT%{prefix}
-mv $RPM_BUILD_ROOT%{file_dir}/* $RPM_BUILD_ROOT%{prefix}
+#mkdir -p $RPM_BUILD_ROOT%{prefix}
+#mv $RPM_BUILD_ROOT%{file_dir}/* $RPM_BUILD_ROOT%{prefix}
 rm -rf $RPM_BUILD_ROOT%{prefix}/bin/mariadb*
+rm -rf $RPM_BUILD_ROOT%{prefix}/bin/msql2mysql
+rm -rf $RPM_BUILD_ROOT%{prefix}/bin/mysqlaccess
+rm -rf $RPM_BUILD_ROOT%{prefix}/bin/mysql_find_rows
+rm -rf $RPM_BUILD_ROOT%{prefix}/bin/mysql_waitpid
+rm -rf $RPM_BUILD_ROOT%{prefix}/bin/mytop
+
 %clean
 rm -rf $RPM_BUILD_ROOT
 
@@ -60,15 +66,17 @@ rm -rf $RPM_BUILD_ROOT
 #fi
 rm -rf /usr/bin/obclient
 rm -rf /usr/bin/mysql_config
+rm -rf /usr/bin/obclient_config_editor
 ln -s %{prefix}/bin/obclient /usr/bin/obclient
 ln -s %{prefix}/bin/mysql_config /usr/bin/mysql_config
-
+ln -s %{prefix}/bin/obclient_config_editor /usr/bin/obclient_config_editor
 
 %preun
 #(rpm -e $1->0), (rpm -Uvh $1->1)
 if [ $1 -eq 0 ]; then
   rm -rf /usr/bin/obclient
   rm -rf /usr/bin/mysql_config
+  rm -rf /usr/bin/obclient_config_editor
 fi
 
 %changelog

@@ -36,6 +36,7 @@
 my_bool opt_mysqld;
 
 const char *config_file="my";			/* Default config file */
+static char *ob_login_path;
 uint verbose= 0, opt_defaults_file_used= 0;
 const char *default_dbug_option="d:t:o,/tmp/my_print_defaults.trace";
 
@@ -66,6 +67,8 @@ static struct my_option my_long_options[] =
    &opt_mysqld, &opt_mysqld, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"no-defaults", 'n', "Return an empty string (useful for scripts).",
    0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
+  {"login-path", 'l', "Path to be read from under the login file.",
+  &ob_login_path, &ob_login_path, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"help", '?', "Display this help message and exit.",
    0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"verbose", 'v', "Increase the output level",
@@ -146,13 +149,13 @@ int main(int argc, char **argv)
   int count, error, args_used;
   char **load_default_groups= 0, *tmp_arguments[6];
   char **argument, **arguments, **org_argv;
-  char *defaults, *extra_defaults, *group_suffix;
+  char *defaults, *extra_defaults, *group_suffix, *login_path;
   int nargs, i= 0;
   MY_INIT(argv[0]);
 
   org_argv= argv;
-  args_used= get_defaults_options(argc, argv, &defaults, &extra_defaults,
-                                  &group_suffix);
+  args_used= get_ob_defaults_options(argc, argv, &defaults, &extra_defaults,
+                                     &group_suffix, &login_path, FALSE);
 
   /* Copy defaults-xxx arguments & program name */
   count=args_used+1;
